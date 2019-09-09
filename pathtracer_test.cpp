@@ -129,18 +129,18 @@ static void swap(T& _lhs, T& _rhs)
 
 bool intersect_ray_aabb(Ray const& _ray, float const* _aabb_min, float const* _aabb_max)
 {
-	float tmin[3];
-	float tmax[3];
+	float tmin = -INFINITY;
+	float tmax = INFINITY;
 
 	for (uint32_t i = 0; i < 3; ++i)
 	{
-		tmin[i] = (_aabb_min[i] - _ray.o.data[i]) * _ray.rcp_d.data[i];
-		tmax[i] = (_aabb_max[i] - _ray.o.data[i]) * _ray.rcp_d.data[i];
+		float const t0 = (_aabb_min[i] - _ray.o.data[i]) * _ray.rcp_d.data[i];
+		float const t1 = (_aabb_max[i] - _ray.o.data[i]) * _ray.rcp_d.data[i];
+		tmin = max(tmin, min(t0, t1));
+		tmax = min(tmax, max(t0, t1));
 	}
 
-	float mint = min(min(tmin[0], tmin[1]), tmin[2]);
-	float maxt = min(min(tmax[0], tmax[1]), tmax[2]);
-	return mint <= maxt;
+	return tmin <= tmax;
 }
 
 bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v1, Vec3 const& _v2, float* o_t, float* o_u, float* o_v)
@@ -218,30 +218,12 @@ uint32_t hits = 0;
 
 uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 {
-	//_ctx.mesh
-
 	uint32_t stack[64];
 	uint32_t stack_size = 0;
 
 	float t = FLT_MAX;
 	float u, v;
 	uint32_t best_prim_idx = UINT32_MAX;
-#if 0
-	for (uint32_t i = 0; i < _ctx.mesh->face_count; ++i)
-	{
-		Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3].p);
-		Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3 + 1].p);
-		Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3 + 2].p);
-		float local_t, local_u, local_v;
-		if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < t)
-		{
-			t = local_t;
-			u = local_u;
-			v = local_v;
-			best_prim_idx = i;
-		}
-	}
-#else
 
 	uint32_t node_idx = 0;
 	do
@@ -275,19 +257,18 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 				assert(stack_size < (sizeof(stack) / sizeof(*stack)));
 				node_idx = node_idx + 1;
 				stack[stack_size++] = node.right_child_or_prim_offset;
+				continue;
 			}
 		}
-		else
-		{
-			if (!stack_size)
-			{
-				break;
-			}
 
-			node_idx = stack[--stack_size];
+		if (!stack_size)
+		{
+			break;
 		}
+
+		node_idx = stack[--stack_size];
+
 	} while (true);
-#endif
 
 	if (best_prim_idx != UINT32_MAX)
 	{

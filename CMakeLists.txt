@@ -11,6 +11,7 @@ target_include_directories(kt_bvh PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(pathtracer_test 
     pathtracer_test.cpp
     fast_obj.h
+    stb_image_write.h
 )
 
 target_link_libraries(pathtracer_test kt_bvh)

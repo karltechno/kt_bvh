@@ -433,8 +433,6 @@ static void build_prim_info_impl(BVH2BuilderContext& _ctx, TriMesh const& _mesh,
 
 static void build_prim_info(BVH2BuilderContext& _ctx)
 {
-	AABB root_aabb = aabb_invalid();
-
 	uint32_t prim_idx = 0;
 	for (uint32_t mesh_idx = 0; mesh_idx < _ctx.num_meshes; ++mesh_idx)
 	{
@@ -617,6 +615,7 @@ void bvh2_write_flat_depth_first(BVH2FlatWriterCtx* _ctx, IntermediateBVH2Node* 
 	}
 	else
 	{
+		flatnode->num_prims_in_leaf = 0;
 		bvh2_write_flat_depth_first(_ctx, _node->children[0]);
 		flatnode->right_child_or_prim_offset = _ctx->cur_idx;
 		bvh2_write_flat_depth_first(_ctx, _node->children[1]);

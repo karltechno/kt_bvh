@@ -71,8 +71,8 @@ static Vec3 vec3_norm(Vec3 const& _vec)
 	return _vec / sqrtf(vec3_dot(_vec, _vec));
 }
 
-static uint32_t const c_width = 256;
-static uint32_t const c_height = 256;
+static uint32_t const c_width = 640;
+static uint32_t const c_height = 480;
 
 
 struct TracerCtx
@@ -151,7 +151,7 @@ bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v1, Vec3 c
 	Vec3 const pvec = vec3_cross(_ray.d, v02);
 	float const det = vec3_dot(pvec, v01);
 
-	if (fabsf(det) < 0.0001f)
+	if (det < 0.000001f)
 	{
 		return false;
 	}
@@ -191,7 +191,7 @@ struct Camera
 
 		origin = _origin;
 
-		screen_bottom_left_corner = origin - basis[0] * widthOverTwo - basis[1] * heightOverTwo - basis[2] * _screen_dist;
+		screen_bottom_left_corner = origin - basis[0] * widthOverTwo - basis[1] * heightOverTwo + basis[2] * _screen_dist;
 
 		screen_u = basis[0] * widthOverTwo * 2.0f;
 		screen_v = basis[1] * heightOverTwo * 2.0f;
@@ -214,18 +214,37 @@ struct Camera
 	Vec3 basis[3];
 };
 
-uint32_t hits = 0;
+
 
 uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 {
-	uint32_t stack[64];
-	uint32_t stack_size = 0;
+
 
 	float t = FLT_MAX;
 	float u, v;
 	uint32_t best_prim_idx = UINT32_MAX;
 
+#if 0
+	for (uint32_t i = 0; i < _ctx.mesh->face_count; ++i)
+	{
+		Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3].p);
+		Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3 + 1].p);
+		Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3 + 2].p);
+
+		float local_t, local_u, local_v;
+		if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < t)
+		{
+			t = local_t;
+			u = local_u;
+			v = local_v;
+			best_prim_idx = i;
+		}
+	}
+#else
+	uint32_t stack[128];
+	uint32_t stack_size = 0;
 	uint32_t node_idx = 0;
+	
 	do
 	{
 		kt_bvh::BVH2Node const& node = _ctx.nodes[node_idx];
@@ -267,13 +286,30 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 		}
 
 		node_idx = stack[--stack_size];
-
 	} while (true);
+#endif
 
 	if (best_prim_idx != UINT32_MAX)
 	{
-		++hits;
-		return 0xFF0000FF;
+		Vec3 const& n0 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[best_prim_idx * 3].n);
+		Vec3 const& n1 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[best_prim_idx * 3 + 1].n);
+		Vec3 const& n2 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[best_prim_idx * 3 + 2].n);
+
+		Vec3 const interp = vec3_norm(n0 * u + n1 * v + n2 * (1.0f - u - v)) * 0.5f + vec3_splat(0.5f);
+
+		union
+		{
+			uint8_t u8[4];
+			uint32_t u32;
+		} colour; 
+
+		for (uint32_t i = 0; i < 3; ++i)
+		{
+			colour.u8[i] = uint8_t(min(255u, uint32_t(interp.data[i] * 255.0f)));
+		}
+		colour.u8[3] = 0xff;
+
+		return colour.u32;
 	}
 	else
 	{
@@ -285,7 +321,7 @@ int main(int argc, char** _argv)
 {
 	TracerCtx ctx;
 
-	ctx.mesh = fast_obj_read("models/cube.obj");
+	ctx.mesh = fast_obj_read("models/sportsCar.obj");
 
 	// Build linear index array
 	ctx.pos_indices = (uint32_t*)malloc(sizeof(uint32_t) * ctx.mesh->face_count * 3);
@@ -330,7 +366,7 @@ int main(int argc, char** _argv)
 
 
 	Camera cam;
-	cam.init(Vec3{ 0.9f, 0.2f, 2.0f }, vec3_splat(0.0f), 50.0f, float(c_width) / float(c_height), 0.5f);
+	cam.init(Vec3{ 2.0f, 3.0f, 3.0f }, vec3_splat(0.0f), 70.0f, float(c_width) / float(c_height), 0.9f);
 	uint8_t* image_ptr = ctx.image;
 	for (uint32_t y = 0; y < c_height; ++y)
 	{
@@ -343,6 +379,7 @@ int main(int argc, char** _argv)
 		}
 	}
 
+	stbi_flip_vertically_on_write(1);
 	stbi_write_bmp("image.png", c_width, c_height, 4, ctx.image);
 
 	kt_bvh::bvh2_free_intermediate(bvh2);

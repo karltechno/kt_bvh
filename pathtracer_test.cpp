@@ -397,7 +397,11 @@ int main(int argc, char** _argv)
 	kt_bvh::IntermediateBVH2* bvh2;
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
-		bvh2 = kt_bvh::bvh2_build_intermediate(&tri_mesh, 1, kt_bvh::BVH2BuildDesc::defult_desc());
+		kt_bvh::BVH2BuildDesc desc;
+		//desc.set_median_split(16);
+		desc.set_binned_sah(0.85f, 16, 16);
+		bvh2 = kt_bvh::bvh2_build_intermediate(&tri_mesh, 1, desc);
+
 
 		uint32_t const num_nodes = kt_bvh::bvh2_intermediate_num_nodes(bvh2);
 		ctx.nodes = (kt_bvh::BVH2Node*)malloc(num_nodes * sizeof(kt_bvh::BVH2Node));

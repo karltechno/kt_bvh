@@ -4,6 +4,8 @@
 #include <string.h> // memset, memcpy
 #include <float.h> // FLT_MAX
 
+#define KT_BVH_ALLOCA(_size) ::alloca(_size)
+
 namespace kt_bvh
 {
 
@@ -162,6 +164,12 @@ static Vec3 aabb_center(AABB const& _aabb)
 static AABB aabb_invalid()
 {
 	return AABB{ vec3_splat(FLT_MAX), vec3_splat(-FLT_MAX) };
+}
+
+static float aabb_surface_area(AABB const& _aabb)
+{
+	Vec3 const diag = _aabb.max - _aabb.min;
+	return (diag.x * diag.y + diag.x * diag.z + diag.y * diag.z) * 2.0f;
 }
 
 struct MemArena
@@ -451,8 +459,129 @@ static void build_prim_info(BVH2BuilderContext& _ctx)
 	KT_BVH_ASSERT(prim_idx == _ctx.total_primitives);
 }
 
+static void build_bvh2_leaf_node(BVH2BuilderContext& _ctx, IntermediateBVH2Node* _node, uint32_t _prim_begin, uint32_t _prim_end)
+{
+	KT_BVH_ASSERT(_prim_end > _prim_begin);
+	uint32_t const nprims = _prim_end - _prim_begin;
 
-IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
+	_node->leaf_prim_offset = _ctx.bvh2->bvh_prim_id_list.size;
+	_node->leaf_num_prims = nprims;
+	PrimitiveID* leaf_prims = _ctx.bvh2->bvh_prim_id_list.append_n(nprims);
+
+	for (uint32_t i = _prim_begin; i < _prim_end; ++i)
+	{
+		*leaf_prims++ = _ctx.primitive_info[i].prim_id;
+	}
+}
+
+struct SAHBucket
+{
+	AABB bounds = aabb_invalid();
+	uint32_t num_prims = 0;
+};
+
+struct SAHBucketingInfo
+{
+	SAHBucketingInfo(uint32_t _num_buckets)
+		: num_buckets(_num_buckets)
+	{
+		KT_BVH_ASSERT(_num_buckets < BVH2BuildDesc::c_sah_max_buckets);
+	}
+
+	uint32_t num_buckets;
+
+	SAHBucket buckets[BVH2BuildDesc::c_sah_max_buckets];
+
+	float split_costs[BVH2BuildDesc::c_sah_max_buckets - 1];
+	AABB forward_split_bounds[BVH2BuildDesc::c_sah_max_buckets - 1];
+	AABB backward_split_bounds[BVH2BuildDesc::c_sah_max_buckets - 1];
+
+	uint32_t forward_prim_count[BVH2BuildDesc::c_sah_max_buckets - 1] = {};
+	uint32_t backward_prim_count[BVH2BuildDesc::c_sah_max_buckets - 1] = {};
+};
+
+static uint32_t build_bvh2_split_sah(BVH2BuilderContext& _ctx, IntermediateBVH2Node* _node, uint32_t _split_axis, uint32_t _prim_begin, uint32_t _prim_end)
+{
+	SAHBucketingInfo bucket_info(_ctx.build_desc.sah_buckets);
+
+	float const rcpAabbDim = 1.0f / (_node->aabb.max - _node->aabb.min).data[_split_axis];
+
+	for (uint32_t prim_idx = _prim_begin; prim_idx < _prim_end; ++prim_idx)
+	{
+		IntermediatePrimitive const& prim = _ctx.primitive_info[prim_idx];
+		float const project_to_dim = (prim.origin - _node->aabb.min).data[_split_axis] * rcpAabbDim;
+		uint32_t const bucket = min(bucket_info.num_buckets - 1u, uint32_t(project_to_dim * bucket_info.num_buckets));
+		bucket_info.buckets[bucket].num_prims++;
+		bucket_info.buckets[bucket].bounds = aabb_union(prim.aabb, bucket_info.buckets[bucket].bounds);
+	}
+
+	uint32_t const num_splits = bucket_info.num_buckets - 1;
+
+	bucket_info.forward_split_bounds[0] = bucket_info.buckets[0].bounds;
+	bucket_info.forward_prim_count[0] = bucket_info.buckets[0].num_prims;
+
+	for (int32_t i = 1; i < int32_t(num_splits); ++i)
+	{
+		bucket_info.forward_split_bounds[i] = aabb_union(bucket_info.forward_split_bounds[i - 1], bucket_info.buckets[i].bounds);
+		bucket_info.forward_prim_count[i] = bucket_info.forward_prim_count[i - 1] + bucket_info.buckets[i].num_prims;
+	}
+
+	bucket_info.backward_split_bounds[num_splits - 1] = bucket_info.buckets[num_splits].bounds;
+	bucket_info.backward_prim_count[num_splits - 1] = bucket_info.buckets[num_splits].num_prims;
+
+	for (int32_t i = int32_t(num_splits) - 2; i >= 0; --i)
+	{
+		bucket_info.backward_split_bounds[i] = aabb_union(bucket_info.backward_split_bounds[i + 1], bucket_info.buckets[i + 1].bounds);
+		bucket_info.backward_prim_count[i] = bucket_info.backward_prim_count[i + 1] + bucket_info.buckets[i + 1].num_prims;
+	}
+
+	float const traversal_cost = _ctx.build_desc.sah_traversal_cost;
+
+	float const root_surface_area = aabb_surface_area(_node->aabb);
+
+	for (uint32_t i = 0; i < num_splits; ++i)
+	{
+		uint32_t const countA = bucket_info.forward_prim_count[i];
+		uint32_t const countB = bucket_info.backward_prim_count[i];
+
+		float const sa = countA ? aabb_surface_area(bucket_info.forward_split_bounds[i]) : 0.0f;
+		float const sb = countB ? aabb_surface_area(bucket_info.backward_split_bounds[i]) : 0.0f;
+		bucket_info.split_costs[i] = traversal_cost + (sa * countA + sb * countB) / root_surface_area;
+	}
+
+	uint32_t best_bucket = 0;
+	float best_cost = bucket_info.split_costs[0];
+	for (uint32_t i = 1; i < num_splits; ++i)
+	{
+		if (bucket_info.split_costs[i] < best_cost)
+		{
+			best_cost = bucket_info.split_costs[i];
+			best_bucket = i;
+		}
+	}
+
+	float const leaf_cost = float(_prim_end - _prim_begin);
+	uint32_t const nprims = _prim_end - _prim_begin;
+
+	if (leaf_cost <= best_cost && nprims <= _ctx.build_desc.max_prims_per_leaf)
+	{
+		build_bvh2_leaf_node(_ctx, _node, _prim_begin, _prim_end);
+		return UINT32_MAX;
+	}
+
+	IntermediatePrimitive* mid = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end, 
+	[rcpAabbDim, _split_axis, _node, &bucket_info, best_bucket](IntermediatePrimitive const& _prim) -> bool
+	{
+		float const project_to_dim = (_prim.origin - _node->aabb.min).data[_split_axis] * rcpAabbDim;
+		uint32_t const bucket = min(bucket_info.num_buckets - 1u, uint32_t(project_to_dim * bucket_info.num_buckets));
+		return bucket <= best_bucket;
+	});
+
+	uint32_t const mid_idx = uint32_t(mid - _ctx.primitive_info);
+	return mid_idx;
+}
+
+static IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
 {
 	KT_BVH_ASSERT(_prim_begin < _prim_end);
 
@@ -468,23 +597,14 @@ IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint32_t _d
 		node->aabb = aabb_union(node->aabb, _ctx.primitive_info[i].aabb);
 	}
 
+	Vec3 const aabb_range = node->aabb.max - node->aabb.min;
 	uint32_t const nprims = _prim_end - _prim_begin;
 
-	if (nprims <= _ctx.build_desc.max_prims_per_leaf)
+	if (nprims == 1)
 	{
-		node->leaf_prim_offset = _ctx.bvh2->bvh_prim_id_list.size;
-		node->leaf_num_prims = nprims;
-		PrimitiveID* leaf_prims = _ctx.bvh2->bvh_prim_id_list.append_n(nprims);
-
-		for (uint32_t i = _prim_begin; i < _prim_end; ++i)
-		{
-			*leaf_prims++ = _ctx.primitive_info[i].prim_id;
-		}
-
+		build_bvh2_leaf_node(_ctx, node, _prim_begin, _prim_end);
 		return node;
 	}
-
-	Vec3 const aabb_range = node->aabb.max - node->aabb.min;
 
 	uint32_t split_axis = 0;
 
@@ -499,16 +619,39 @@ IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint32_t _d
 
 	node->split_axis = split_axis;
 
-	uint32_t middle_idx;
-
 	switch (_ctx.build_desc.type)
 	{
+		case BVH2BuildType::TopDownBinnedSAH:
+		{
+			uint32_t const middle_idx = build_bvh2_split_sah(_ctx, node, split_axis, _prim_begin, _prim_end);
+			if (middle_idx == UINT32_MAX)
+			{
+				return node;
+			}
+
+			if (_prim_begin != middle_idx && _prim_end != middle_idx)
+			{
+				node->children[0] = build_bvh2_recursive(_ctx, _depth + 1, _prim_begin, middle_idx);
+				node->children[1] = build_bvh2_recursive(_ctx, _depth + 1, middle_idx, _prim_end);
+				break;
+			}
+
+		} // fallthrough if binned SAH failed
+
 		case BVH2BuildType::MedianSplit:
 		{
+			if (nprims <= _ctx.build_desc.max_prims_per_leaf)
+			{
+				build_bvh2_leaf_node(_ctx, node, _prim_begin, _prim_end);
+				return node;
+			}
+
 			float const median = aabb_center(node->aabb).data[split_axis];
 
 			IntermediatePrimitive* midPrim = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
-					  [median, split_axis](IntermediatePrimitive const& _val) { return _val.origin.data[split_axis] < median; });;
+					  [median, split_axis](IntermediatePrimitive const& _val) { return _val.origin.data[split_axis] < median; });
+
+			uint32_t middle_idx;
 
 			middle_idx = uint32_t(midPrim - _ctx.primitive_info);
 			if (middle_idx == _prim_begin || middle_idx == _prim_end)
@@ -516,11 +659,12 @@ IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint32_t _d
 				// Obviously terrible since prims aren't sorted, fixme/remove.
 				middle_idx = (_prim_begin + _prim_end) / 2;
 			}
+
+			node->children[0] = build_bvh2_recursive(_ctx, _depth + 1, _prim_begin, middle_idx);
+			node->children[1] = build_bvh2_recursive(_ctx, _depth + 1, middle_idx, _prim_end);
 		} break;
 	}
 
-	node->children[0] = build_bvh2_recursive(_ctx, _depth + 1, _prim_begin, middle_idx);
-	node->children[1] = build_bvh2_recursive(_ctx, _depth + 1, middle_idx, _prim_end);
 	return node;
 }
 

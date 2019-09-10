@@ -3,8 +3,10 @@
 #ifdef _MSC_VER
 #define _USE_MATH_DEFINES
 #endif
+
 #include <math.h>
 #include <float.h>
+#include <chrono>
 
 #include "kt_bvh.h"
 
@@ -14,6 +16,36 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+struct TimeAccumulator
+{
+	char const* name;
+	uint64_t micros;
+	uint32_t invocations;
+};
+
+static TimeAccumulator s_bvhBuildTime = { "bvh_build", 0, 0 };
+static TimeAccumulator s_bvhTraverseTime = { "bvh_traverse", 0, 0 };
+static TimeAccumulator s_intersectTime = { "tri_intersect", 0, 0 };
+
+
+struct ScopedPerfTimer
+{
+	ScopedPerfTimer(TimeAccumulator* _accum)
+		: accum(_accum)
+	{
+		begin = std::chrono::high_resolution_clock::now();
+	}
+
+	~ScopedPerfTimer()
+	{
+		auto now = std::chrono::high_resolution_clock::now();
+		accum->micros += std::chrono::duration_cast<std::chrono::microseconds>(now - begin).count();
+		accum->invocations++;
+	}
+
+	TimeAccumulator* accum;
+	std::chrono::high_resolution_clock::time_point begin;
+};
 
 struct Vec3
 {
@@ -244,6 +276,9 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 	uint32_t stack[128];
 	uint32_t stack_size = 0;
 	uint32_t node_idx = 0;
+
+	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
+
 	
 	do
 	{
@@ -253,6 +288,8 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 		{
 			if (node.is_leaf())
 			{
+				ScopedPerfTimer isectTime(&s_intersectTime);
+
 				uint32_t* prims = _ctx.prim_id_buf + node.right_child_or_prim_offset;
 				for (uint32_t i = 0; i < node.num_prims_in_leaf; ++i)
 				{
@@ -317,6 +354,19 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 	}
 }
 
+static void print_perf_timer(TimeAccumulator const& accum)
+{
+	double const millis = double(accum.micros) / 1000.0;
+	if (accum.invocations > 1)
+	{
+		printf("%s took total %.2fms over %u invocations (avg per invocation: %.2fus)\n", accum.name, millis, accum.invocations, accum.micros / double(accum.invocations));
+	}
+	else
+	{
+		printf("%s took total %.2fms over %u invocations\n", accum.name, millis, accum.invocations);
+	}
+}
+
 int main(int argc, char** _argv)
 {
 	TracerCtx ctx;
@@ -342,13 +392,17 @@ int main(int argc, char** _argv)
 	kt_bvh::TriMesh tri_mesh;
 	tri_mesh.set_indices(ctx.pos_indices, ctx.mesh->face_count);
 	tri_mesh.set_vertices(ctx.mesh->positions, sizeof(float[3]), ctx.mesh->position_count);
+	kt_bvh::IntermediateBVH2* bvh2;
+	{
+		ScopedPerfTimer isectTime(&s_bvhBuildTime);
+		bvh2 = kt_bvh::bvh2_build_intermediate(&tri_mesh, 1, kt_bvh::BVH2BuildDesc::defult_desc());
 
-	kt_bvh::IntermediateBVH2* bvh2 = kt_bvh::bvh2_build_intermediate(&tri_mesh, 1, kt_bvh::BVH2BuildDesc::defult_desc());
+		uint32_t const num_nodes = kt_bvh::bvh2_intermediate_num_nodes(bvh2);
+		ctx.nodes = (kt_bvh::BVH2Node*)malloc(num_nodes * sizeof(kt_bvh::BVH2Node));
 
-	uint32_t const num_nodes = kt_bvh::bvh2_intermediate_num_nodes(bvh2);
-	ctx.nodes = (kt_bvh::BVH2Node*)malloc(num_nodes * sizeof(kt_bvh::BVH2Node));
+		kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.nodes, num_nodes);
+	}
 
-	kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.nodes, num_nodes);
 
 	// Write out primitive id without mesh id.
 	{
@@ -383,4 +437,8 @@ int main(int argc, char** _argv)
 	stbi_write_bmp("image.png", c_width, c_height, 4, ctx.image);
 
 	kt_bvh::bvh2_free_intermediate(bvh2);
+
+	print_perf_timer(s_bvhBuildTime);
+	print_perf_timer(s_bvhTraverseTime);
+	print_perf_timer(s_intersectTime);
 }

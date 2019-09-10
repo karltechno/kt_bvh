@@ -163,6 +163,8 @@ void                            fast_obj_destroy(fastObjMesh* mesh);
 /* Max supported power when parsing float */
 #define MAX_POWER               20
 
+#define MAX_FACE_INDICES		32
+
 typedef struct
 {
     /* Final mesh */
@@ -639,15 +641,18 @@ static
 const char* parse_face(fastObjData* data, const char* ptr)
 {
     unsigned int count;
-    fastObjIndex vn;
+    fastObjIndex vn[MAX_FACE_INDICES];
     int          v;
     int          t;
     int          n;
-
+	unsigned int ii;
+	unsigned int i1;
+	unsigned int i2;
 
     ptr = skip_whitespace(ptr);
 
     count = 0;
+
     while (!is_newline(*ptr))
     {
         v = 0;
@@ -669,31 +674,42 @@ const char* parse_face(fastObjData* data, const char* ptr)
         }
 
         if (v < 0)
-            vn.p = (array_size(data->mesh->positions) / 3) - (unsigned int)(-v);
+            vn[count].p = (array_size(data->mesh->positions) / 3) - (unsigned int)(-v);
         else
-            vn.p = (unsigned int)(v);
+			vn[count].p = (unsigned int)(v);
 
         if (t < 0)
-            vn.t = (array_size(data->mesh->texcoords) / 2) - (unsigned int)(-t);
+			vn[count].t = (array_size(data->mesh->texcoords) / 2) - (unsigned int)(-t);
         else if (t > 0)
-            vn.t = (unsigned int)(t);
+			vn[count].t = (unsigned int)(t);
         else
-            vn.t = 0;
+			vn[count].t = 0;
 
         if (n < 0)
-            vn.n = (array_size(data->mesh->normals) / 3) - (unsigned int)(-n);
+			vn[count].n = (array_size(data->mesh->normals) / 3) - (unsigned int)(-n);
         else if (n > 0)
-            vn.n = (unsigned int)(n);
+			vn[count].n = (unsigned int)(n);
         else
-            vn.n = 0;
+			vn[count].n = 0;
 
-        array_push(data->mesh->indices, vn);
         count++;
 
         ptr = skip_whitespace(ptr);
     }
 
-    array_push(data->mesh->face_vertices, count);
+	/* Simple fan triangulation */
+	i2 = 1;
+
+	for (ii = 2; ii < count; ++ii)
+	{
+		i1 = i2;
+		i2 = ii;
+		array_push(data->mesh->indices, vn[0]);
+		array_push(data->mesh->indices, vn[i1]);
+		array_push(data->mesh->indices, vn[i2]);
+		array_push(data->mesh->face_vertices, 3);
+	}
+
     array_push(data->mesh->face_materials, data->material);
 
     data->group.face_count++;

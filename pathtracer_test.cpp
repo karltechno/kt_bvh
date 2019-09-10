@@ -19,7 +19,7 @@
 struct TimeAccumulator
 {
 	char const* name;
-	uint64_t micros;
+	uint64_t nanos;
 	uint32_t invocations;
 };
 
@@ -39,7 +39,7 @@ struct ScopedPerfTimer
 	~ScopedPerfTimer()
 	{
 		auto now = std::chrono::high_resolution_clock::now();
-		accum->micros += std::chrono::duration_cast<std::chrono::microseconds>(now - begin).count();
+		accum->nanos += std::chrono::duration_cast<std::chrono::nanoseconds>(now - begin).count();
 		accum->invocations++;
 	}
 
@@ -356,10 +356,12 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 
 static void print_perf_timer(TimeAccumulator const& accum)
 {
-	double const millis = double(accum.micros) / 1000.0;
+	double const micros = double(accum.nanos) / (1000.0);
+	double const millis = micros / (1000.0);
+
 	if (accum.invocations > 1)
 	{
-		printf("%s took total %.2fms over %u invocations (avg per invocation: %.2fus)\n", accum.name, millis, accum.invocations, accum.micros / double(accum.invocations));
+		printf("%s took total %.2fms over %u invocations (avg per invocation: %.2fus)\n", accum.name, millis, accum.invocations, micros / double(accum.invocations));
 	}
 	else
 	{

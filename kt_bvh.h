@@ -154,20 +154,20 @@ struct BVH2BuildDesc
 		type = BVH2BuildType::TopDownBinnedSAH;
 		sah_buckets = _num_buckets > c_sah_max_buckets ? c_sah_max_buckets : _num_buckets;
 		sah_traversal_cost = _traversal_cost;
-		max_prims_per_leaf = _prims_per_leaf;
+		leaf_prim_threshold = _prims_per_leaf;
 	}
 
 	void set_median_split(uint32_t _prims_per_leaf = c_default_prims_per_leaf)
 	{
 		type = BVH2BuildType::MedianSplit;
-		max_prims_per_leaf = _prims_per_leaf;
+		leaf_prim_threshold = _prims_per_leaf;
 	}
 
 	// BVH build algorithm.
 	BVH2BuildType type;
 
-	// Maximum amount of primitives per leaf node.
-	uint32_t max_prims_per_leaf;
+	// Threshold of primitive to force leaf creation.
+	uint32_t leaf_prim_threshold;
 
 	// Number of surface area heuristic binning buckets.
 	uint32_t sah_buckets;

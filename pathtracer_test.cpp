@@ -279,7 +279,6 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 
 	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
 
-	
 	do
 	{
 		kt_bvh::BVH2Node const& node = _ctx.nodes[node_idx];
@@ -398,8 +397,8 @@ int main(int argc, char** _argv)
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
 		kt_bvh::BVH2BuildDesc desc;
-		//desc.set_median_split(16);
-		desc.set_binned_sah(0.85f, 16, 16);
+		//desc.set_median_split(4);
+		desc.set_binned_sah(0.85f, 16, 4);
 		bvh2 = kt_bvh::bvh2_build_intermediate(&tri_mesh, 1, desc);
 
 

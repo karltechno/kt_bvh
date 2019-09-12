@@ -3,6 +3,7 @@
 #include <malloc.h> // malloc
 #include <string.h> // memset, memcpy
 #include <float.h> // FLT_MAX
+#include <math.h> // NAN
 
 #define KT_BVH_ALLOCA(_size) ::alloca(_size)
 
@@ -345,6 +346,7 @@ struct IntermediateBVH
 	MemArena arena;
 	IntermediateBVHNode *root;
 	uint32_t total_nodes;
+	uint32_t total_leaf_nodes;
 
 	dyn_pod_array<PrimitiveID> bvh_prim_id_list;
 	uint32_t max_depth;
@@ -363,18 +365,19 @@ struct BVH2BuilderContext
 {
 	MemArena& arena()
 	{
-		return bvh2->arena;
+		return bvh->arena;
 	}
 
 	IntermediateBVHNode* new_node(uint32_t _depth)
 	{
-		bvh2->max_depth = max(bvh2->max_depth, _depth);
+		bvh->max_depth = max(bvh->max_depth, _depth);
 		IntermediateBVHNode* node = arena().alloc_zeroed<IntermediateBVHNode>();
-		++bvh2->total_nodes;
+		++bvh->total_nodes;
+
 		return node;
 	}
 
-	IntermediateBVH* bvh2;
+	IntermediateBVH* bvh;
 
 	IntermediatePrimitive* primitive_info;
 	uint32_t total_primitives;
@@ -500,13 +503,14 @@ static IntermediateBVHNode* build_bvhn_leaf_node(BVH2BuilderContext& _ctx, uint3
 	if (nprims <= _ctx.build_desc.max_leaf_prims)
 	{
 		IntermediateBVHNode* node = _ctx.new_node(_depth);
+		++_ctx.bvh->total_leaf_nodes;
 		node->split_axis[0] = 0;
 
 		AABB aabb = aabb_invalid();
-		node->leaf_prim_offset = _ctx.bvh2->bvh_prim_id_list.size;
+		node->leaf_prim_offset = _ctx.bvh->bvh_prim_id_list.size;
 		node->leaf_num_prims = nprims;
 		node->num_children = 0;
-		PrimitiveID* leaf_prims = _ctx.bvh2->bvh_prim_id_list.append_n(nprims);
+		PrimitiveID* leaf_prims = _ctx.bvh->bvh_prim_id_list.append_n(nprims);
 
 		for (uint32_t i = _prim_begin; i < _prim_end; ++i)
 		{
@@ -781,7 +785,7 @@ static IntermediateBVHNode* build_bvhn_recursive(BVH2BuilderContext& _ctx, uint3
 {
 	KT_BVH_ASSERT(_prim_begin < _prim_end);
 
-	_ctx.bvh2->max_depth = max(_ctx.bvh2->max_depth, _depth);
+	_ctx.bvh->max_depth = max(_ctx.bvh->max_depth, _depth);
 
 	uint32_t const nprims = _prim_end - _prim_begin;
 
@@ -928,7 +932,7 @@ IntermediateBVH* bvh_build_intermediate(TriMesh const* _meshes, uint32_t _num_me
 	builder.meshes = _meshes;
 	builder.num_meshes = _num_meshes;
 	builder.total_primitives = total_prims;
-	builder.bvh2 = bvh_intermediate;
+	builder.bvh = bvh_intermediate;
 	builder.primitive_info = builder.arena().alloc_array_uninitialized<IntermediatePrimitive>(total_prims);
 	builder.build_desc = _build_desc;
 
@@ -938,7 +942,7 @@ IntermediateBVH* bvh_build_intermediate(TriMesh const* _meshes, uint32_t _num_me
 
 	build_prim_info(builder);
 
-	builder.bvh2->root = build_bvhn_recursive(builder, 0, 0, total_prims);
+	builder.bvh->root = build_bvhn_recursive(builder, 0, 0, total_prims);
 
 	return bvh_intermediate;
 }
@@ -963,6 +967,8 @@ BVHBuildResult bvh_build_result(IntermediateBVH* _intermediate_bvh)
 	res.max_depth = _intermediate_bvh->max_depth;
 	res.prim_id_array = _intermediate_bvh->bvh_prim_id_list.mem;
 	res.prim_id_array_size = _intermediate_bvh->bvh_prim_id_list.size;
+	res.total_leaf_nodes = _intermediate_bvh->total_leaf_nodes;
+	res.total_interior_nodes = _intermediate_bvh->total_nodes - _intermediate_bvh->total_leaf_nodes;
 	return res;
 }
 
@@ -1009,6 +1015,84 @@ bool bvh2_intermediate_to_flat(IntermediateBVH const* _bvh2, BVH2Node* o_nodes, 
 	writer.nodes = o_nodes;
 	writer.total_nodes = _bvh2->total_nodes;;
 	bvh2_write_flat_depth_first(&writer, _bvh2->root);
+
+	return true;
+}
+
+struct BVH4FlatWriterCtx
+{
+	BVH4Node* nodes;
+	uint32_t cur_idx;
+	uint32_t total_nodes;
+};
+
+uint32_t bvh4_write_flat_recursive(BVH4FlatWriterCtx* _ctx, IntermediateBVHNode* _node)
+{
+	KT_BVH_ASSERT(_ctx->cur_idx < _ctx->total_nodes);
+	KT_BVH_ASSERT(!_node->is_leaf());
+
+	uint32_t const node_idx = _ctx->cur_idx++;
+
+	BVH4Node* flatnode = &_ctx->nodes[node_idx];
+
+	memset(flatnode->aabb_max_soa, 0, sizeof(flatnode->aabb_max_soa));
+	memset(flatnode->aabb_min_soa, 0, sizeof(flatnode->aabb_min_soa));
+
+	for (uint32_t i = 0; i < _node->num_children - 1; ++i)
+	{
+		flatnode->split_axis[i] = _node->split_axis[i];
+	}
+
+	for (uint32_t i = 0; i < _node->num_children; ++i)
+	{
+		IntermediateBVHNode* child = _node->children[i];
+		// Write SoA AABB.
+		for (uint32_t j = 0; j < 3; ++j)
+		{
+			flatnode->aabb_min_soa[j][i] = child->aabb_min[j];
+			flatnode->aabb_max_soa[j][i] = child->aabb_max[j];
+		}
+
+		if (child->is_leaf())
+		{
+			flatnode->num_prims_in_leaf[i] = child->leaf_num_prims;
+			flatnode->children[i] = child->leaf_prim_offset;
+		}
+		else
+		{
+			flatnode->num_prims_in_leaf[i] = 0;
+			flatnode->children[i] = bvh4_write_flat_recursive(_ctx, child);
+		}
+	}
+
+	for (uint32_t i = _node->num_children; i < 4; ++i)
+	{
+		// Empty node sentinel.
+		flatnode->children[i] = UINT32_MAX;
+
+		for (uint32_t j = 0; j < 4; ++j)
+		{
+			flatnode->aabb_max_soa[j][i] = NAN;
+			flatnode->aabb_min_soa[j][i] = NAN;
+		}
+	}
+
+	return node_idx;
+}
+
+bool bvh4_intermediate_to_flat(IntermediateBVH const* _bvh4, BVH4Node* o_nodes, uint32_t _node_cap)
+{
+	uint32_t const interior_node_count = _bvh4->total_nodes - _bvh4->total_leaf_nodes;
+	if (_node_cap < interior_node_count || _bvh4->width != BVHWidth::BVH4)
+	{
+		return false;
+	}
+
+	BVH4FlatWriterCtx writer;
+	writer.cur_idx = 0;
+	writer.nodes = o_nodes;
+	writer.total_nodes = interior_node_count;
+	bvh4_write_flat_recursive(&writer, _bvh4->root);
 
 	return true;
 }

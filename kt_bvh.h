@@ -130,6 +130,29 @@ struct BVH2Node
 	uint16_t split_axis;
 };
 
+struct BVH4Node
+{
+	bool is_child_empty(uint32_t _idx) const
+	{
+		return children[_idx] != UINT32_MAX;
+	}
+
+	bool is_child_leaf(uint32_t _idx) const
+	{
+		return num_prims_in_leaf[_idx] > 0;
+	}
+
+	float aabb_min_soa[3][4];
+	float aabb_max_soa[3][4];
+
+	uint32_t children[4];
+	uint16_t num_prims_in_leaf[4];
+	uint8_t split_axis[3];
+
+	uint8_t _pad_;
+};
+
+
 enum class BVHBuildType
 {
 	MedianSplit,
@@ -239,6 +262,12 @@ struct BVHBuildResult
 	// Total amount of intermediate nodes in tree.
 	uint32_t total_nodes;
 
+	// Total amount of leaf nodes in tree.
+	uint32_t total_leaf_nodes;
+
+	// Total amount of interior nodes in tree.
+	uint32_t total_interior_nodes;
+
 	// Maximum depth of tree.
 	uint32_t max_depth;
 
@@ -258,7 +287,10 @@ void bvh_free_intermediate(IntermediateBVH* _intermediate_bvh);
 // Get resulting BVH info.
 BVHBuildResult bvh_build_result(IntermediateBVH* _intermediate_bvh);
 
-// Write out flat representation of intermediate BVH2 tree. _node_cap must be >= bvh2_intermediate_num_nodes()
+// Write out flat representation of intermediate BVH2 tree. _node_cap must be >= BVHBuildResult::total_nodes
 bool bvh2_intermediate_to_flat(IntermediateBVH const* _bvh2, BVH2Node* o_nodes, uint32_t _node_cap);
+
+// Write out flat representation of intermediate BVH4 tree. _node_cap must be >= BVHBuildResult::total_interior_nodes
+bool bvh4_intermediate_to_flat(IntermediateBVH const* _bvh4, BVH4Node* o_nodes, uint32_t _node_cap);
 
 } // namespace kt_bvh

@@ -103,8 +103,8 @@ static Vec3 vec3_norm(Vec3 const& _vec)
 	return _vec / sqrtf(vec3_dot(_vec, _vec));
 }
 
-static uint32_t const c_width = 640;
-static uint32_t const c_height = 480;
+static uint32_t const c_width = 1920;
+static uint32_t const c_height = 1080;
 
 
 struct TracerCtx
@@ -159,7 +159,7 @@ static void swap(T& _lhs, T& _rhs)
 	_rhs = temp;
 }
 
-bool intersect_ray_aabb(Ray const& _ray, float const* _aabb_min, float const* _aabb_max)
+bool intersect_ray_aabb(Ray const& _ray, float const* _aabb_min, float const* _aabb_max, float* o_tmin)
 {
 	float tmin = -INFINITY;
 	float tmax = INFINITY;
@@ -172,7 +172,13 @@ bool intersect_ray_aabb(Ray const& _ray, float const* _aabb_min, float const* _a
 		tmax = min(tmax, max(t0, t1));
 	}
 
-	return tmin <= tmax;
+	if (tmin <= tmax)
+	{
+		*o_tmin = tmin;
+		return true;
+	}
+
+	return false;
 }
 
 bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v1, Vec3 const& _v2, float* o_t, float* o_u, float* o_v)
@@ -279,11 +285,13 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 
 	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
 
+	uint32_t const ray_dir_is_neg[3] = { _ray.d.x < 0.0f, _ray.d.y < 0.0f, _ray.d.z < 0.0f };
+
 	do
 	{
 		kt_bvh::BVH2Node const& node = _ctx.nodes[node_idx];
-
-		if (intersect_ray_aabb(_ray, node.aabb_min, node.aabb_max))
+		float aaab_tmin;
+		if (intersect_ray_aabb(_ray, node.aabb_min, node.aabb_max, &aaab_tmin) && t >= aaab_tmin)
 		{
 			if (node.is_leaf())
 			{
@@ -310,8 +318,16 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 			else
 			{
 				assert(stack_size < (sizeof(stack) / sizeof(*stack)));
-				node_idx = node_idx + 1;
-				stack[stack_size++] = node.right_child_or_prim_offset;
+				if (ray_dir_is_neg[node.split_axis])
+				{
+					stack[stack_size++] = node_idx + 1;
+					node_idx = node.right_child_or_prim_offset;
+				}
+				else
+				{
+					node_idx = node_idx + 1;
+					stack[stack_size++] = node.right_child_or_prim_offset;
+				}
 				continue;
 			}
 		}
@@ -425,7 +441,9 @@ int main(int argc, char** _argv)
 
 
 	Camera cam;
-	cam.init(Vec3{ 2.0f, 3.0f, 3.0f }, vec3_splat(0.0f), 70.0f, float(c_width) / float(c_height), 0.9f);
+	//cam.init(Vec3{ .5f, 0.5f, .5f }, vec3_splat(0.0f), 70.0f, float(c_width) / float(c_height), 1.5f);
+	cam.init(Vec3{ 0.0f, 1.5f, 0.5f}, Vec3{0.0f, 1.5f, 2.0f}, 70.0f, float(c_width) / float(c_height), 0.5f);
+
 	uint8_t* image_ptr = ctx.image;
 	for (uint32_t y = 0; y < c_height; ++y)
 	{
@@ -439,7 +457,7 @@ int main(int argc, char** _argv)
 	}
 
 	stbi_flip_vertically_on_write(1);
-	stbi_write_bmp("image.png", c_width, c_height, 4, ctx.image);
+	stbi_write_bmp("image.bmp", c_width, c_height, 4, ctx.image);
 
 	kt_bvh::bvh2_free_intermediate(bvh2);
 

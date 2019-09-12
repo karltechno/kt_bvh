@@ -708,11 +708,11 @@ const char* parse_face(fastObjData* data, const char* ptr)
 		array_push(data->mesh->indices, vn[i1]);
 		array_push(data->mesh->indices, vn[i2]);
 		array_push(data->mesh->face_vertices, 3);
+		data->group.face_count++;
 	}
 
     array_push(data->mesh->face_materials, data->material);
 
-    data->group.face_count++;
 
     return ptr;
 }

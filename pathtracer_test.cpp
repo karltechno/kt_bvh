@@ -388,7 +388,7 @@ int main(int argc, char** _argv)
 {
 	TracerCtx ctx;
 
-	ctx.mesh = fast_obj_read("models/sportsCar.obj");
+	ctx.mesh = fast_obj_read("models/living_room/living_room.obj");
 
 	// Build linear index array
 	ctx.pos_indices = (uint32_t*)malloc(sizeof(uint32_t) * ctx.mesh->face_count * 3);
@@ -405,37 +405,30 @@ int main(int argc, char** _argv)
 		}
 	}
 
-
 	kt_bvh::TriMesh tri_mesh;
 	tri_mesh.set_indices(ctx.pos_indices, ctx.mesh->face_count);
 	tri_mesh.set_vertices(ctx.mesh->positions, sizeof(float[3]), ctx.mesh->position_count);
-	kt_bvh::IntermediateBVH2* bvh2;
+	kt_bvh::IntermediateBVH* bvh2;
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
-		kt_bvh::BVH2BuildDesc desc;
+		kt_bvh::BVHBuildDesc desc;
 		//desc.set_median_split(4);
-		desc.set_binned_sah(0.85f, 16, 4);
-		bvh2 = kt_bvh::bvh2_build_intermediate(&tri_mesh, 1, desc);
+		desc.set_binned_sah(0.85f, 16);
+		bvh2 = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);
 
+		kt_bvh::BVHBuildResult const result = kt_bvh::bvh_build_result(bvh2);
+		ctx.nodes = (kt_bvh::BVH2Node*)malloc(result.total_nodes * sizeof(kt_bvh::BVH2Node));
 
-		uint32_t const num_nodes = kt_bvh::bvh2_intermediate_num_nodes(bvh2);
-		ctx.nodes = (kt_bvh::BVH2Node*)malloc(num_nodes * sizeof(kt_bvh::BVH2Node));
+		kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.nodes, result.total_nodes);
 
-		kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.nodes, num_nodes);
-	}
-
-
-	// Write out primitive id without mesh id.
-	{
-		kt_bvh::PrimitiveID const* ids;
-		uint32_t num_ids;
-		kt_bvh::bvh2_get_primitive_id_array(bvh2, &ids, &num_ids);
-		ctx.prim_id_buf = (uint32_t*)malloc(sizeof(uint32_t) * num_ids);
-		for (uint32_t i = 0; i < num_ids; ++i)
+		// Write out primitive id without mesh id.
+		ctx.prim_id_buf = (uint32_t*)malloc(sizeof(uint32_t) * result.prim_id_array_size);
+		for (uint32_t i = 0; i < result.prim_id_array_size; ++i)
 		{
-			ctx.prim_id_buf[i] = ids[i].mesh_prim_idx;
+			ctx.prim_id_buf[i] = result.prim_id_array[i].mesh_prim_idx;
 		}
 	}
+
 
 	ctx.image = (uint8_t*)malloc(sizeof(uint32_t) * c_width * c_height);
 
@@ -459,7 +452,7 @@ int main(int argc, char** _argv)
 	stbi_flip_vertically_on_write(1);
 	stbi_write_bmp("image.bmp", c_width, c_height, 4, ctx.image);
 
-	kt_bvh::bvh2_free_intermediate(bvh2);
+	kt_bvh::bvh_free_intermediate(bvh2);
 
 	print_perf_timer(s_bvhBuildTime);
 	print_perf_timer(s_bvhTraverseTime);

@@ -130,30 +130,31 @@ struct BVH2Node
 	uint16_t split_axis;
 };
 
-
-enum class BVH2BuildType
+enum class BVHBuildType
 {
 	MedianSplit,
 	TopDownBinnedSAH
 };
 
-struct BVH2BuildDesc
+struct BVHBuildDesc
 {
+	static uint32_t const c_max_branching_factor = 2;
+
 	static uint32_t const c_default_min_prims_per_leaf = 4;
 	static uint32_t const c_default_max_prims_per_leaf = 8;
 
 	static uint32_t const c_sah_max_buckets = 32;
 
-	static BVH2BuildDesc default_desc()
+	static BVHBuildDesc default_desc()
 	{
-		BVH2BuildDesc ret;
+		BVHBuildDesc ret;
 		ret.set_binned_sah(0.8f);
 		return ret;
 	}
 
 	void set_binned_sah(float _traversal_cost, uint32_t _num_buckets = 16, uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
 	{
-		type = BVH2BuildType::TopDownBinnedSAH;
+		type = BVHBuildType::TopDownBinnedSAH;
 		sah_buckets = _num_buckets > c_sah_max_buckets ? c_sah_max_buckets : _num_buckets;
 		sah_traversal_cost = _traversal_cost;
 		min_leaf_prims = _min_prims_per_leaf;
@@ -162,13 +163,13 @@ struct BVH2BuildDesc
 
 	void set_median_split(uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
 	{
-		type = BVH2BuildType::MedianSplit;
+		type = BVHBuildType::MedianSplit;
 		min_leaf_prims = _min_prims_per_leaf;
 		max_leaf_prims = _max_prims_per_leaf;
 	}
 
 	// BVH build algorithm.
-	BVH2BuildType type;
+	BVHBuildType type;
 
 	// Threshold of primitive to force leaf creation.
 	uint32_t min_leaf_prims;
@@ -183,25 +184,46 @@ struct BVH2BuildDesc
 	float sah_traversal_cost;
 };
 
-struct IntermediateBVH2;
+struct IntermediateBVHNode
+{
+	bool is_leaf() const
+	{
+		return children[0] == nullptr;
+	}
 
-// Build an intermediate representation of a BVH2 tree for the supplied triangle meshes.
-IntermediateBVH2* bvh2_build_intermediate(TriMesh const* _meshes, uint32_t _num_meshes, BVH2BuildDesc const& _build_desc, AllocHooks* alloc_hooks = nullptr);
+	float aabb_min[3];
+	float aabb_max[3];
 
-// Free internal structures from intermediate BVH2 build.
-void bvh2_free_intermediate(IntermediateBVH2* _intermediate_bvh);
+	IntermediateBVHNode* children[BVHBuildDesc::c_max_branching_factor];
+	uint32_t split_axis[BVHBuildDesc::c_max_branching_factor - 1];
 
-// Get the primitive ID array built with the tree. The BVH nodes point to offsets inside of this array.
-// User should either copy or convert this to their own format for intersection.
-void bvh2_get_primitive_id_array(IntermediateBVH2 const* _bvh2, PrimitiveID const** o_prim_array, uint32_t* o_prim_array_size);
+	uint32_t leaf_prim_offset;
+	uint32_t leaf_num_prims;
+};
 
-// Return required amount of nodes in BVH2 tree. 
-uint32_t bvh2_intermediate_num_nodes(IntermediateBVH2 const* _bvh2);
+struct BVHBuildResult
+{
+	IntermediateBVHNode const* root;
+	uint32_t total_nodes;
 
-// Max depth of BVH2 tree.
-uint32_t bvh2_depth(IntermediateBVH2 const* _bvh2);
+	uint32_t max_depth;
+
+	PrimitiveID const* prim_id_array;
+	uint32_t prim_id_array_size;
+};
+
+struct IntermediateBVH;
+
+// Build an intermediate representation of a BVH tree for the supplied triangle meshes.
+IntermediateBVH* bvh_build_intermediate(TriMesh const* _meshes, uint32_t _num_meshes, BVHBuildDesc const& _build_desc, AllocHooks* alloc_hooks = nullptr);
+
+// Free internal structures from intermediate BVH build.
+void bvh_free_intermediate(IntermediateBVH* _intermediate_bvh);
+
+// Get resulting BVH info.
+BVHBuildResult bvh_build_result(IntermediateBVH* _intermediate_bvh);
 
 // Write out flat representation of intermediate BVH2 tree. _node_cap must be >= bvh2_intermediate_num_nodes()
-bool bvh2_intermediate_to_flat(IntermediateBVH2 const* _bvh2, BVH2Node* o_nodes, uint32_t _node_cap);
+bool bvh2_intermediate_to_flat(IntermediateBVH const* _bvh2, BVH2Node* o_nodes, uint32_t _node_cap);
 
 } // namespace kt_bvh

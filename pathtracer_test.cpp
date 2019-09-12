@@ -323,81 +323,74 @@ Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 {
 	Intersection result;
 
-	struct StackEntry
-	{
-		uint32_t idx;
-		uint32_t nprims;
-	};
-
-	StackEntry stack[128];
+	uint32_t stack[128];
 	uint32_t stack_size = 0;
-
-	StackEntry next_entry = { 0, 0 };
 
 	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
 
 	uint32_t const ray_dir_is_neg[3] = { _ray.d.x < 0.0f, _ray.d.y < 0.0f, _ray.d.z < 0.0f };
+	uint32_t node_idx = 0;
 
 	do
 	{
-		if (next_entry.nprims)
+		kt_bvh::BVH4Node const& node = _ctx.bvh4[node_idx];
+		__m128 aabb_tmin;
+		__m128 const mask = intersect_ray_aabb_x4_soa(_ray, (float*)node.aabb_min_soa, (float*)node.aabb_max_soa, &aabb_tmin);
+
+		uint32_t leaves_to_visit = _mm_movemask_ps(_mm_and_ps(mask, _mm_cmpge_ps(_mm_set1_ps(result.t), aabb_tmin)));
+
+		uint32_t sortedIndices[4] = { 0, 1, 2, 3 };
+
+		uint32_t did_sort = 0;
+		if (!ray_dir_is_neg[node.split_axis[1]])
 		{
-			ScopedPerfTimer isectTime(&s_intersectTime);
-
-			uint32_t* prims = _ctx.prim_id_buf + next_entry.idx;
-			for (uint32_t i = 0; i < next_entry.nprims; ++i)
-			{
-				uint32_t const face_idx = prims[i];
-				Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3].p);
-				Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 1].p);
-				Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 2].p);
-
-				float local_t, local_u, local_v;
-				if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < result.t)
-				{
-					result.t = local_t;
-					result.u = local_u;
-					result.v = local_v;
-					result.prim_idx = face_idx;
-				}
-			}
+			swap(sortedIndices[0], sortedIndices[2]);
+			swap(sortedIndices[1], sortedIndices[3]);
+			did_sort = 1;
 		}
-		else
+
+		if (!ray_dir_is_neg[node.split_axis[2 * (did_sort ^ 1)]])
 		{
-			kt_bvh::BVH4Node const& node = _ctx.bvh4[next_entry.idx];
-			__m128 aabb_tmin;
-			__m128 const mask = intersect_ray_aabb_x4_soa(_ray, (float*)node.aabb_min_soa, (float*)node.aabb_max_soa, &aabb_tmin);
+			swap(sortedIndices[2], sortedIndices[3]);
+		}
 
-			uint32_t leaves_to_visit = _mm_movemask_ps(_mm_and_ps(mask, _mm_cmpge_ps(_mm_set1_ps(result.t), aabb_tmin)));
+		if (!ray_dir_is_neg[node.split_axis[2 * did_sort]])
+		{
+			swap(sortedIndices[0], sortedIndices[1]);
+		}
 
-			uint32_t sortedIndices[4] = { 0, 1, 2, 3 };
-
-			uint32_t did_sort = 0;
-			if (!ray_dir_is_neg[node.split_axis[1]])
+		for (uint32_t i = 0; i < 4; ++i)
+		{
+			uint32_t const idx = sortedIndices[i];
+			if (((1 << idx) & leaves_to_visit))
 			{
-				swap(sortedIndices[0], sortedIndices[2]);
-				swap(sortedIndices[1], sortedIndices[3]);
-				did_sort = 1;
-			}
+				if (node.is_child_leaf(idx))
+				{
+					ScopedPerfTimer isectTime(&s_intersectTime);
 
-			if (!ray_dir_is_neg[node.split_axis[2 * (did_sort ^ 1)]])
-			{
-				swap(sortedIndices[2], sortedIndices[3]);
-			}
+					uint32_t* prims = _ctx.prim_id_buf + node.children[idx];
+					for (uint32_t i = 0; i < node.num_prims_in_leaf[idx]; ++i)
+					{
+						uint32_t const face_idx = prims[i];
+						Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3].p);
+						Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 1].p);
+						Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 2].p);
 
-			if (!ray_dir_is_neg[node.split_axis[2 * did_sort]])
-			{
-				swap(sortedIndices[0], sortedIndices[1]);
-			}
-
-			for (uint32_t i = 0; i < 4; ++i)
-			{
-				uint32_t const idx = sortedIndices[i];
-				if (((1 << idx) & leaves_to_visit))
+						float local_t, local_u, local_v;
+						if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < result.t)
+						{
+							result.t = local_t;
+							result.u = local_u;
+							result.v = local_v;
+							result.prim_idx = face_idx;
+						}
+					}
+				}
+				else
 				{
 					assert(stack_size < sizeof(stack) / sizeof(*stack));
 					assert(node.children[i] != UINT32_MAX);
-					stack[stack_size++] = StackEntry{ node.children[idx], node.num_prims_in_leaf[idx] };
+					stack[stack_size++] = node.children[idx];
 				}
 			}
 		}
@@ -407,7 +400,7 @@ Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 			break;
 		}
 
-		next_entry = stack[--stack_size];
+		node_idx = stack[--stack_size];
 	} while (true);
 
 	return result;

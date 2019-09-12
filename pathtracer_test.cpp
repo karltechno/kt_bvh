@@ -124,6 +124,12 @@ static Vec3 vec3_norm(Vec3 const& _vec)
 static uint32_t const c_width = 1920;
 static uint32_t const c_height = 1080;
 
+struct PreprocessedTri
+{
+	Vec3 v01;
+	Vec3 v02;
+	Vec3 v0;
+};
 
 struct TracerCtx
 {
@@ -134,9 +140,11 @@ struct TracerCtx
 		free(pos_indices);
 		free(prim_id_buf);
 		free(image);
+		free(preprocessed_tris);
 	}
 
 	fastObjMesh* mesh = nullptr;
+	PreprocessedTri* preprocessed_tris = nullptr;
 	uint32_t* pos_indices = nullptr;
 	uint32_t* prim_id_buf = nullptr;
 	uint8_t* image = nullptr;
@@ -240,13 +248,10 @@ __m128 intersect_ray_aabb_x4_soa(Ray const& _ray, float const* _aabb_min_x4_soa,
 }
 
 
-bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v1, Vec3 const& _v2, float* o_t, float* o_u, float* o_v)
+bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v01, Vec3 const& _v02, float* o_t, float* o_u, float* o_v)
 {
-	Vec3 const v01 = _v1 - _v0;
-	Vec3 const v02 = _v2 - _v0;
-
-	Vec3 const pvec = vec3_cross(_ray.d, v02);
-	float const det = vec3_dot(pvec, v01);
+	Vec3 const pvec = vec3_cross(_ray.d, _v02);
+	float const det = vec3_dot(pvec, _v01);
 
 	if (det < 0.000001f)
 	{
@@ -259,11 +264,11 @@ bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v1, Vec3 c
 	float const u = vec3_dot(tvec, pvec) * idet;
 	if (u < 0.0f || u > 1.0f) return false;
 
-	Vec3 const qvec = vec3_cross(tvec, v01);
+	Vec3 const qvec = vec3_cross(tvec, _v01);
 	float const v = vec3_dot(_ray.d, qvec) * idet;
 	if (v < 0.0f || u + v > 1.0f) return false;
 
-	*o_t = vec3_dot(v02, qvec) * idet;
+	*o_t = vec3_dot(_v02, qvec) * idet;
 	*o_v = v;
 	*o_u = u;
 	return true;
@@ -362,27 +367,26 @@ Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 		for (uint32_t i = 0; i < 4; ++i)
 		{
 			uint32_t const idx = sortedIndices[i];
-			if (((1 << idx) & leaves_to_visit))
+			if ((1 << idx) & leaves_to_visit)
 			{
 				if (node.is_child_leaf(idx))
 				{
 					ScopedPerfTimer isectTime(&s_intersectTime);
 
 					uint32_t* prims = _ctx.prim_id_buf + node.children[idx];
-					for (uint32_t i = 0; i < node.num_prims_in_leaf[idx]; ++i)
-					{
-						uint32_t const face_idx = prims[i];
-						Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3].p);
-						Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 1].p);
-						Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 2].p);
+					uint32_t const nprims = node.num_prims_in_leaf[idx];
 
+					PreprocessedTri* tris = _ctx.preprocessed_tris + node.children[idx];
+
+					for (uint32_t i = 0; i < nprims; ++i)
+					{
 						float local_t, local_u, local_v;
-						if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < result.t)
+						if (intersect_ray_tri(_ray, tris[i].v0, tris[i].v01, tris[i].v02, &local_t, &local_u, &local_v) && local_t < result.t)
 						{
 							result.t = local_t;
 							result.u = local_u;
 							result.v = local_v;
-							result.prim_idx = face_idx;
+							result.prim_idx = prims[i];
 						}
 					}
 				}
@@ -429,20 +433,19 @@ Intersection trace_bvh2(TracerCtx const& _ctx, Ray const& _ray)
 				ScopedPerfTimer isectTime(&s_intersectTime);
 
 				uint32_t* prims = _ctx.prim_id_buf + node.right_child_or_prim_offset;
-				for (uint32_t i = 0; i < node.num_prims_in_leaf; ++i)
-				{
-					uint32_t const face_idx = prims[i];
-					Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3].p);
-					Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 1].p);
-					Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 2].p);
+				uint32_t const nprims = node.num_prims_in_leaf;
 
+				PreprocessedTri* tris = _ctx.preprocessed_tris + node.right_child_or_prim_offset;
+
+				for (uint32_t i = 0; i < nprims; ++i)
+				{
 					float local_t, local_u, local_v;
-					if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < result.t)
+					if (intersect_ray_tri(_ray, tris[i].v0, tris[i].v01, tris[i].v02, &local_t, &local_u, &local_v) && local_t < result.t)
 					{
 						result.t = local_t;
 						result.u = local_u;
 						result.v = local_v;
-						result.prim_idx = face_idx;
+						result.prim_idx = prims[i];
 					}
 				}
 			}
@@ -574,6 +577,26 @@ int main(int argc, char** _argv)
 		for (uint32_t i = 0; i < result.prim_id_array_size; ++i)
 		{
 			ctx.prim_id_buf[i] = result.prim_id_array[i].mesh_prim_idx;
+		}
+
+		// preprocess tris for moller trumbore intersection
+
+		ctx.preprocessed_tris = (PreprocessedTri*)malloc(sizeof(PreprocessedTri) * result.prim_id_array_size * 3);
+
+		uint32_t* prim_begin = ctx.prim_id_buf;
+		uint32_t* prim_end = prim_begin + result.prim_id_array_size;
+		PreprocessedTri* tri_write = ctx.preprocessed_tris;
+		while (prim_begin != prim_end)
+		{
+			uint32_t const face_idx = *prim_begin++;
+			Vec3 const& v0 = *(((Vec3*)ctx.mesh->positions) + ctx.mesh->indices[face_idx * 3].p);
+			Vec3 const& v1 = *(((Vec3*)ctx.mesh->positions) + ctx.mesh->indices[face_idx * 3 + 1].p);
+			Vec3 const& v2 = *(((Vec3*)ctx.mesh->positions) + ctx.mesh->indices[face_idx * 3 + 2].p);
+
+			tri_write->v0 = v0;
+			tri_write->v01 = v1 - v0;
+			tri_write->v02 = v2 - v0;
+			++tri_write;
 		}
 	}
 

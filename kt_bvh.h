@@ -139,35 +139,42 @@ enum class BVH2BuildType
 
 struct BVH2BuildDesc
 {
-	static uint32_t const c_default_prims_per_leaf = 8;
+	static uint32_t const c_default_min_prims_per_leaf = 4;
+	static uint32_t const c_default_max_prims_per_leaf = 8;
+
 	static uint32_t const c_sah_max_buckets = 32;
 
 	static BVH2BuildDesc default_desc()
 	{
 		BVH2BuildDesc ret;
-		ret.set_binned_sah(0.45f);
+		ret.set_binned_sah(0.8f);
 		return ret;
 	}
 
-	void set_binned_sah(float _traversal_cost, uint32_t _num_buckets = 16, uint32_t _prims_per_leaf = c_default_prims_per_leaf)
+	void set_binned_sah(float _traversal_cost, uint32_t _num_buckets = 16, uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
 	{
 		type = BVH2BuildType::TopDownBinnedSAH;
 		sah_buckets = _num_buckets > c_sah_max_buckets ? c_sah_max_buckets : _num_buckets;
 		sah_traversal_cost = _traversal_cost;
-		leaf_prim_threshold = _prims_per_leaf;
+		min_leaf_prims = _min_prims_per_leaf;
+		max_leaf_prims = _max_prims_per_leaf;
 	}
 
-	void set_median_split(uint32_t _prims_per_leaf = c_default_prims_per_leaf)
+	void set_median_split(uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
 	{
 		type = BVH2BuildType::MedianSplit;
-		leaf_prim_threshold = _prims_per_leaf;
+		min_leaf_prims = _min_prims_per_leaf;
+		max_leaf_prims = _max_prims_per_leaf;
 	}
 
 	// BVH build algorithm.
 	BVH2BuildType type;
 
 	// Threshold of primitive to force leaf creation.
-	uint32_t leaf_prim_threshold;
+	uint32_t min_leaf_prims;
+
+	// Maximum amount of primitives per leaf, nodes will be further split to accommodate.
+	uint32_t max_leaf_prims;
 
 	// Number of surface area heuristic binning buckets.
 	uint32_t sah_buckets;

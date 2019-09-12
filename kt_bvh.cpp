@@ -234,6 +234,14 @@ struct MemArena
 		return (T*)alloc(sizeof(T), alignof(T));
 	}
 
+	template <typename T>
+	T* alloc_zeroed()
+	{
+		T* ptr = (T*)alloc(sizeof(T), alignof(T));
+		memset(ptr, 0, sizeof(T));
+		return ptr;
+	}
+
 	void free_all()
 	{
 		ChunkHeader* next = head;
@@ -363,6 +371,14 @@ struct BVH2BuilderContext
 		return bvh2->arena;
 	}
 
+	IntermediateBVH2Node* new_node(uint32_t _depth)
+	{
+		bvh2->max_depth = max(bvh2->max_depth, _depth);
+		IntermediateBVH2Node* node = arena().alloc_zeroed<IntermediateBVH2Node>();
+		++bvh2->total_nodes;
+		return node;
+	}
+
 	IntermediateBVH2* bvh2;
 
 	IntermediatePrimitive* primitive_info;
@@ -459,21 +475,37 @@ static void build_prim_info(BVH2BuilderContext& _ctx)
 	KT_BVH_ASSERT(prim_idx == _ctx.total_primitives);
 }
 
-static void build_bvh2_leaf_node(BVH2BuilderContext& _ctx, IntermediateBVH2Node* _node, uint32_t _prim_begin, uint32_t _prim_end)
+static IntermediateBVH2Node* build_bvh2_leaf_node(BVH2BuilderContext& _ctx, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
 {
 	KT_BVH_ASSERT(_prim_end > _prim_begin);
-	uint32_t const nprims = _prim_end - _prim_begin;
-	KT_BVH_ASSERT(nprims <= UINT16_MAX);
 
-	_node->leaf_prim_offset = _ctx.bvh2->bvh_prim_id_list.size;
-	_node->leaf_num_prims = nprims;
+	uint32_t const nprims = _prim_end - _prim_begin;
+	IntermediateBVH2Node* node = _ctx.new_node(_depth);
+	node->split_axis = 0;
+
+	if (nprims > _ctx.build_desc.max_leaf_prims)
+	{
+		// Need to split and recurse until we are below leaf limit.
+		uint32_t const mid = nprims / 2 + _prim_begin;
+		node->children[0] = build_bvh2_leaf_node(_ctx, _depth + 1, _prim_begin, mid);
+		node->children[1] = build_bvh2_leaf_node(_ctx, _depth + 1, mid, _prim_end);
+		return node;
+	}
+
+	node->aabb = aabb_invalid();
+	node->leaf_prim_offset = _ctx.bvh2->bvh_prim_id_list.size;
+	node->leaf_num_prims = nprims;
 	PrimitiveID* leaf_prims = _ctx.bvh2->bvh_prim_id_list.append_n(nprims);
 
 	for (uint32_t i = _prim_begin; i < _prim_end; ++i)
 	{
+		node->aabb = aabb_union(node->aabb, _ctx.primitive_info[i].aabb);
 		*leaf_prims++ = _ctx.primitive_info[i].prim_id;
 	}
+
+	return node;
 }
+
 
 struct SAHBucket
 {
@@ -497,10 +529,10 @@ struct SAHBucketingInfo
 	uint32_t forward_prim_count[BVH2BuildDesc::c_sah_max_buckets - 1] = {};
 };
 
-static uint32_t build_bvh2_split_sah
+static uint32_t bvh2_eval_sah_split
 (
 	BVH2BuilderContext& _ctx, 
-	IntermediateBVH2Node* _node, 
+	AABB const& _enclosing_aabb,
 	AABB const& _centroid_aabb, 
 	uint32_t _split_axis, 
 	uint32_t _prim_begin, 
@@ -514,7 +546,6 @@ static uint32_t build_bvh2_split_sah
 	// TODO: Evaluate all 3 axis?
 	if (split_axis_len <= 0.0001f)
 	{
-		build_bvh2_leaf_node(_ctx, _node, _prim_begin, _prim_end);
 		return UINT32_MAX;
 	}
 
@@ -542,7 +573,7 @@ static uint32_t build_bvh2_split_sah
 
 	AABB incremental_reverse_aabb = aabb_invalid();
 	uint32_t incremental_reverse_prim_count = 0;
-	float const root_surface_area = aabb_surface_area(_node->aabb);
+	float const root_surface_area = aabb_surface_area(_enclosing_aabb);
 
 	uint32_t best_split = UINT32_MAX;
 	float best_cost = FLT_MAX;
@@ -582,9 +613,8 @@ static uint32_t build_bvh2_split_sah
 
 	float const leaf_cost = float(nprims);
 
-	if (leaf_cost <= best_cost || best_split == UINT32_MAX)
+	if ((leaf_cost <= best_cost && nprims <= _ctx.build_desc.max_leaf_prims) || best_split == UINT32_MAX)
 	{
-		build_bvh2_leaf_node(_ctx, _node, _prim_begin, _prim_end);
 		return UINT32_MAX;
 	}
 
@@ -606,39 +636,23 @@ static IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint
 
 	_ctx.bvh2->max_depth = max(_ctx.bvh2->max_depth, _depth);
 
-	IntermediateBVH2Node* node = _ctx.arena().alloc_uninitialized<IntermediateBVH2Node>();
-	memset(node, 0, sizeof(IntermediateBVH2Node));
-	_ctx.bvh2->total_nodes++;
-
-	node->aabb = aabb_invalid();
-
-	AABB centroid_aabb = aabb_invalid();
-
-	if (_ctx.build_desc.type == BVH2BuildType::TopDownBinnedSAH)
-	{
-		for (uint32_t i = _prim_begin; i < _prim_end; ++i)
-		{
-			node->aabb = aabb_union(node->aabb, _ctx.primitive_info[i].aabb);
-			centroid_aabb = aabb_expand(centroid_aabb, _ctx.primitive_info[i].origin);
-		}
-	}
-	else
-	{
-		for (uint32_t i = _prim_begin; i < _prim_end; ++i)
-		{
-			node->aabb = aabb_union(node->aabb, _ctx.primitive_info[i].aabb);
-		}
-	}
-
-
-	Vec3 const aabb_range = node->aabb.max - node->aabb.min;
 	uint32_t const nprims = _prim_end - _prim_begin;
 
-	if (nprims <= _ctx.build_desc.leaf_prim_threshold)
+	if (nprims <= _ctx.build_desc.min_leaf_prims)
 	{
-		build_bvh2_leaf_node(_ctx, node, _prim_begin, _prim_end);
-		return node;
+		return build_bvh2_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
 	}
+
+	AABB enclosing_aabb = aabb_invalid();
+	AABB centroid_aabb = aabb_invalid();
+
+	for (uint32_t i = _prim_begin; i < _prim_end; ++i)
+	{
+		enclosing_aabb = aabb_union(enclosing_aabb, _ctx.primitive_info[i].aabb);
+		centroid_aabb = aabb_expand(centroid_aabb, _ctx.primitive_info[i].origin);
+	}
+
+	Vec3 const aabb_range = centroid_aabb.max - centroid_aabb.min;
 
 	uint32_t split_axis = 0;
 
@@ -651,26 +665,28 @@ static IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint
 		split_axis = 2;
 	}
 
-	node->split_axis = split_axis;
-
 	switch (_ctx.build_desc.type)
 	{
 		case BVH2BuildType::TopDownBinnedSAH:
 		{
-			uint32_t const middle_idx = build_bvh2_split_sah(_ctx, node, centroid_aabb, split_axis, _prim_begin, _prim_end);
+			uint32_t const middle_idx = bvh2_eval_sah_split(_ctx, enclosing_aabb, centroid_aabb, split_axis, _prim_begin, _prim_end);
 			if (middle_idx == UINT32_MAX)
 			{
-				return node;
+				return build_bvh2_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
 			}
-
 			KT_BVH_ASSERT(_prim_begin != middle_idx && _prim_end != middle_idx);
+
+			IntermediateBVH2Node* node = _ctx.new_node(_depth);
+			node->aabb = enclosing_aabb;
+			node->split_axis = split_axis;
 			node->children[0] = build_bvh2_recursive(_ctx, _depth + 1, _prim_begin, middle_idx);
 			node->children[1] = build_bvh2_recursive(_ctx, _depth + 1, middle_idx, _prim_end);
+			return node;
 		} break;
 
 		case BVH2BuildType::MedianSplit:
 		{
-			float const median = aabb_center(node->aabb).data[split_axis];
+			float const median = aabb_center(centroid_aabb).data[split_axis];
 
 			IntermediatePrimitive* midPrim = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
 					  [median, split_axis](IntermediatePrimitive const& _val) { return _val.origin.data[split_axis] < median; });
@@ -680,16 +696,20 @@ static IntermediateBVH2Node* build_bvh2_recursive(BVH2BuilderContext& _ctx, uint
 			middle_idx = uint32_t(midPrim - _ctx.primitive_info);
 			if (middle_idx == _prim_begin || middle_idx == _prim_end)
 			{
-				// Obviously terrible since prims aren't sorted, fixme/remove.
 				middle_idx = (_prim_begin + _prim_end) / 2;
 			}
 
+			IntermediateBVH2Node* node = _ctx.new_node(_depth);
+			node->aabb = enclosing_aabb;
+			node->split_axis = 0;
 			node->children[0] = build_bvh2_recursive(_ctx, _depth + 1, _prim_begin, middle_idx);
 			node->children[1] = build_bvh2_recursive(_ctx, _depth + 1, middle_idx, _prim_end);
+			return node;
 		} break;
 	}
 
-	return node;
+	KT_BVH_ASSERT(false);
+	KT_BVH_UNREACHABLE;
 }
 
 IntermediateBVH2* bvh2_build_intermediate(TriMesh const* _meshes, uint32_t _num_meshes, BVH2BuildDesc const& _build_desc, AllocHooks* alloc_hooks)
@@ -707,9 +727,14 @@ IntermediateBVH2* bvh2_build_intermediate(TriMesh const* _meshes, uint32_t _num_
 
 	AllocHooks hooks = alloc_hooks ? *alloc_hooks : malloc_hooks();
 
-	IntermediateBVH2* bvh_intermediate = (IntermediateBVH2*)hooks.alloc_fn(hooks.ctx, sizeof(IntermediateBVH2));
-	memset(bvh_intermediate, 0, sizeof(IntermediateBVH2));
-	bvh_intermediate->arena.init(hooks);
+	IntermediateBVH2* bvh_intermediate = nullptr;
+
+	{
+		MemArena arena;
+		arena.init(hooks);
+		bvh_intermediate = arena.alloc_zeroed<IntermediateBVH2>();
+		bvh_intermediate->arena = arena;
+	}
 
 	BVH2BuilderContext builder = {};
 
@@ -738,8 +763,9 @@ void bvh2_free_intermediate(IntermediateBVH2* _intermediate_bvh)
 		return;
 	}
 
-	_intermediate_bvh->arena.free_all();
-	_intermediate_bvh->arena.hooks.free_fn(_intermediate_bvh->arena.hooks.ctx, _intermediate_bvh);
+	// Copy arena as intermediate structure is allocated from it.
+	MemArena arena = _intermediate_bvh->arena;
+	arena.free_all();
 }
 
 void bvh2_get_primitive_id_array(IntermediateBVH2 const* _bvh2, PrimitiveID const** o_prim_array, uint32_t* o_prim_array_size)

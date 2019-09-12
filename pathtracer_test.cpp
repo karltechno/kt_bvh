@@ -414,6 +414,8 @@ int main(int argc, char** _argv)
 		kt_bvh::BVHBuildDesc desc;
 		//desc.set_median_split(4);
 		desc.set_binned_sah(0.85f, 16);
+		desc.width = kt_bvh::BVHWidth::BVH2;
+
 		bvh2 = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);
 
 		kt_bvh::BVHBuildResult const result = kt_bvh::bvh_build_result(bvh2);

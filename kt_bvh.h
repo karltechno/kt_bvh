@@ -136,9 +136,15 @@ enum class BVHBuildType
 	TopDownBinnedSAH
 };
 
+enum class BVHWidth
+{
+	BVH2,
+	BVH4,
+};
+
 struct BVHBuildDesc
 {
-	static uint32_t const c_max_branching_factor = 2;
+	static uint32_t const c_max_branching_factor = 4;
 
 	static uint32_t const c_default_min_prims_per_leaf = 4;
 	static uint32_t const c_default_max_prims_per_leaf = 8;
@@ -159,7 +165,7 @@ struct BVHBuildDesc
 		sah_traversal_cost = _traversal_cost;
 		min_leaf_prims = _min_prims_per_leaf;
 		max_leaf_prims = _max_prims_per_leaf;
-		max_branching_factor = 2;
+		width = BVHWidth::BVH2;
 	}
 
 	void set_median_split(uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
@@ -167,7 +173,18 @@ struct BVHBuildDesc
 		type = BVHBuildType::MedianSplit;
 		min_leaf_prims = _min_prims_per_leaf;
 		max_leaf_prims = _max_prims_per_leaf;
-		max_branching_factor = 2;
+		width = BVHWidth::BVH2;
+	}
+
+	uint32_t get_branching_factor() const
+	{
+		switch (width)
+		{
+			case BVHWidth::BVH2: return 2;
+			case BVHWidth::BVH4: return 4;
+		}
+
+		KT_BVH_ASSERT(false); KT_BVH_UNREACHABLE;
 	}
 
 	// BVH build algorithm.
@@ -182,8 +199,8 @@ struct BVHBuildDesc
 	// Number of surface area heuristic binning buckets.
 	uint32_t sah_buckets;
 
-	// Maximum branching factor of nodes.
-	uint32_t max_branching_factor;
+	// Width of BVH.
+	BVHWidth width;
 
 	// Estimated cost of traversal for surface area heuristic (relative to intersection cost).
 	float sah_traversal_cost;

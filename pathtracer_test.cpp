@@ -1,4 +1,5 @@
 #include <malloc.h>
+#include <xmmintrin.h>
 
 #ifdef _MSC_VER
 #define _USE_MATH_DEFINES
@@ -7,6 +8,7 @@
 #include <math.h>
 #include <float.h>
 #include <chrono>
+#include <utility>
 
 #include "kt_bvh.h"
 
@@ -15,6 +17,8 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+
+bool g_bvh4 = true;
 
 struct TimeAccumulator
 {
@@ -27,6 +31,20 @@ static TimeAccumulator s_bvhBuildTime = { "bvh_build", 0, 0 };
 static TimeAccumulator s_bvhTraverseTime = { "bvh_traverse", 0, 0 };
 static TimeAccumulator s_intersectTime = { "tri_intersect", 0, 0 };
 
+#ifdef _MSC_VER
+	extern "C" unsigned char _BitScanForward(unsigned long * _Index, unsigned long _Mask);
+	#pragma intrinsic(_BitScanForward)
+#endif
+
+static uint32_t find_first_set_lsb(uint32_t _v)
+{
+#ifdef _MSC_VER
+	unsigned long idx;
+	return ::_BitScanForward(&idx, _v) ? idx : 32;
+#else
+	return __builtin_ctz(_v);
+#endif
+}
 
 struct ScopedPerfTimer
 {
@@ -112,17 +130,23 @@ struct TracerCtx
 	~TracerCtx()
 	{
 		fast_obj_destroy(mesh);
-		free(nodes);
+		free(bvh4);
 		free(pos_indices);
 		free(prim_id_buf);
 		free(image);
 	}
 
 	fastObjMesh* mesh = nullptr;
-	kt_bvh::BVH2Node* nodes = nullptr;
 	uint32_t* pos_indices = nullptr;
 	uint32_t* prim_id_buf = nullptr;
 	uint8_t* image = nullptr;
+
+	union 
+	{
+		kt_bvh::BVH4Node* bvh4 = nullptr;
+		kt_bvh::BVH2Node* bvh2;
+	};
+
 };
 
 struct Ray
@@ -132,11 +156,20 @@ struct Ray
 		o = _o;
 		d = _d;
 		rcp_d = Vec3{1.0f / _d.x, 1.0f / _d.y, 1.0f / _d.z};
+
+		for (uint32_t i = 0; i < 3; ++i)
+		{
+			rcp_d_x4[i] = _mm_set1_ps(rcp_d.data[i]);
+			o_x4[i] = _mm_set1_ps(o.data[i]);
+		}
 	}
 
 	Vec3 o;
 	Vec3 d;
 	Vec3 rcp_d;
+
+	__m128 o_x4[3];
+	__m128 rcp_d_x4[3];
 };
 
 template <typename T>
@@ -180,6 +213,32 @@ bool intersect_ray_aabb(Ray const& _ray, float const* _aabb_min, float const* _a
 
 	return false;
 }
+
+__m128 intersect_ray_aabb_x4_soa(Ray const& _ray, float const* _aabb_min_x4_soa, float const* _aabb_max_x4_soa, __m128* o_tmin)
+{
+	__m128 tmin = _mm_set1_ps(-INFINITY);
+	__m128 tmax = _mm_set1_ps(INFINITY);
+
+	for (uint32_t i = 0; i < 3; ++i)
+	{
+		__m128 const ro = _ray.o_x4[i];
+		__m128 const rcp_d = _ray.rcp_d_x4[i];
+
+		__m128 const aabb_min = _mm_load_ps(_aabb_min_x4_soa + 4 * i);
+		__m128 const aabb_max = _mm_load_ps(_aabb_max_x4_soa + 4 * i);
+
+		__m128 const t0 = _mm_mul_ps(_mm_sub_ps(aabb_min, ro), rcp_d);
+		__m128 const t1 = _mm_mul_ps(_mm_sub_ps(aabb_max, ro), rcp_d);
+
+		tmin = _mm_max_ps(tmin, _mm_min_ps(t0, t1));
+		tmax = _mm_min_ps(tmax, _mm_max_ps(t0, t1));
+	}
+
+	*o_tmin = tmin;
+
+	return _mm_cmple_ps(tmin, tmax);
+}
+
 
 bool intersect_ray_tri(Ray const& _ray, Vec3 const& _v0, Vec3 const& _v1, Vec3 const& _v2, float* o_t, float* o_u, float* o_v)
 {
@@ -252,33 +311,112 @@ struct Camera
 	Vec3 basis[3];
 };
 
-
-
-uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
+struct Intersection
 {
-
-
-	float t = FLT_MAX;
+	uint32_t prim_idx = UINT32_MAX;
 	float u, v;
-	uint32_t best_prim_idx = UINT32_MAX;
+	float t = FLT_MAX;
+};
 
-#if 0
-	for (uint32_t i = 0; i < _ctx.mesh->face_count; ++i)
+
+Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
+{
+	Intersection result;
+
+	struct StackEntry
 	{
-		Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3].p);
-		Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3 + 1].p);
-		Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[i * 3 + 2].p);
+		uint32_t idx;
+		uint32_t nprims;
+	};
 
-		float local_t, local_u, local_v;
-		if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < t)
+	StackEntry stack[128];
+	uint32_t stack_size = 0;
+
+	StackEntry next_entry = { 0, 0 };
+
+	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
+
+	uint32_t const ray_dir_is_neg[3] = { _ray.d.x < 0.0f, _ray.d.y < 0.0f, _ray.d.z < 0.0f };
+
+	do
+	{
+		if (next_entry.nprims)
 		{
-			t = local_t;
-			u = local_u;
-			v = local_v;
-			best_prim_idx = i;
+			ScopedPerfTimer isectTime(&s_intersectTime);
+
+			uint32_t* prims = _ctx.prim_id_buf + next_entry.idx;
+			for (uint32_t i = 0; i < next_entry.nprims; ++i)
+			{
+				uint32_t const face_idx = prims[i];
+				Vec3 const& v0 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3].p);
+				Vec3 const& v1 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 1].p);
+				Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 2].p);
+
+				float local_t, local_u, local_v;
+				if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < result.t)
+				{
+					result.t = local_t;
+					result.u = local_u;
+					result.v = local_v;
+					result.prim_idx = face_idx;
+				}
+			}
 		}
-	}
-#else
+		else
+		{
+			kt_bvh::BVH4Node const& node = _ctx.bvh4[next_entry.idx];
+			__m128 aabb_tmin;
+			__m128 const mask = intersect_ray_aabb_x4_soa(_ray, (float*)node.aabb_min_soa, (float*)node.aabb_max_soa, &aabb_tmin);
+
+			uint32_t leaves_to_visit = _mm_movemask_ps(_mm_and_ps(mask, _mm_cmpge_ps(_mm_set1_ps(result.t), aabb_tmin)));
+
+			uint32_t sortedIndices[4] = { 0, 1, 2, 3 };
+
+			uint32_t did_sort = 0;
+			if (!ray_dir_is_neg[node.split_axis[1]])
+			{
+				swap(sortedIndices[0], sortedIndices[2]);
+				swap(sortedIndices[1], sortedIndices[3]);
+				did_sort = 1;
+			}
+
+			if (!ray_dir_is_neg[node.split_axis[2 * (did_sort ^ 1)]])
+			{
+				swap(sortedIndices[2], sortedIndices[3]);
+			}
+
+			if (!ray_dir_is_neg[node.split_axis[2 * did_sort]])
+			{
+				swap(sortedIndices[0], sortedIndices[1]);
+			}
+
+			for (uint32_t i = 0; i < 4; ++i)
+			{
+				uint32_t const idx = sortedIndices[i];
+				if (((1 << idx) & leaves_to_visit))
+				{
+					assert(stack_size < sizeof(stack) / sizeof(*stack));
+					assert(node.children[i] != UINT32_MAX);
+					stack[stack_size++] = StackEntry{ node.children[idx], node.num_prims_in_leaf[idx] };
+				}
+			}
+		}
+
+		if (!stack_size)
+		{
+			break;
+		}
+
+		next_entry = stack[--stack_size];
+	} while (true);
+
+	return result;
+}
+
+Intersection trace_bvh2(TracerCtx const& _ctx, Ray const& _ray)
+{
+	Intersection result;
+
 	uint32_t stack[128];
 	uint32_t stack_size = 0;
 	uint32_t node_idx = 0;
@@ -289,9 +427,9 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 
 	do
 	{
-		kt_bvh::BVH2Node const& node = _ctx.nodes[node_idx];
+		kt_bvh::BVH2Node const& node = _ctx.bvh2[node_idx];
 		float aaab_tmin;
-		if (intersect_ray_aabb(_ray, node.aabb_min, node.aabb_max, &aaab_tmin) && t >= aaab_tmin)
+		if (intersect_ray_aabb(_ray, node.aabb_min, node.aabb_max, &aaab_tmin) && result.t >= aaab_tmin)
 		{
 			if (node.is_leaf())
 			{
@@ -306,12 +444,12 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 					Vec3 const& v2 = *(((Vec3*)_ctx.mesh->positions) + _ctx.mesh->indices[face_idx * 3 + 2].p);
 
 					float local_t, local_u, local_v;
-					if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < t)
+					if (intersect_ray_tri(_ray, v0, v1, v2, &local_t, &local_u, &local_v) && local_t < result.t)
 					{
-						t = local_t;
-						u = local_u;
-						v = local_v;
-						best_prim_idx = face_idx;
+						result.t = local_t;
+						result.u = local_u;
+						result.v = local_v;
+						result.prim_idx = face_idx;
 					}
 				}
 			}
@@ -339,15 +477,21 @@ uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
 
 		node_idx = stack[--stack_size];
 	} while (true);
-#endif
 
-	if (best_prim_idx != UINT32_MAX)
+	return result;
+}
+
+uint32_t trace_test(TracerCtx const& _ctx, Ray const& _ray)
+{
+	Intersection const isect = g_bvh4 ? trace_bvh4(_ctx, _ray) : trace_bvh2(_ctx, _ray);
+
+	if (isect.prim_idx != UINT32_MAX)
 	{
-		Vec3 const& n0 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[best_prim_idx * 3].n);
-		Vec3 const& n1 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[best_prim_idx * 3 + 1].n);
-		Vec3 const& n2 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[best_prim_idx * 3 + 2].n);
+		Vec3 const& n0 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[isect.prim_idx * 3].n);
+		Vec3 const& n1 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[isect.prim_idx * 3 + 1].n);
+		Vec3 const& n2 = *(((Vec3*)_ctx.mesh->normals) + _ctx.mesh->indices[isect.prim_idx * 3 + 2].n);
 
-		Vec3 const interp = vec3_norm(n0 * u + n1 * v + n2 * (1.0f - u - v)) * 0.5f + vec3_splat(0.5f);
+		Vec3 const interp = vec3_norm(n0 * isect.u + n1 * isect.v + n2 * (1.0f - isect.u - isect.v)) * 0.5f + vec3_splat(0.5f);
 
 		union
 		{
@@ -414,14 +558,23 @@ int main(int argc, char** _argv)
 		kt_bvh::BVHBuildDesc desc;
 		//desc.set_median_split(4);
 		desc.set_binned_sah(0.85f, 16);
-		desc.width = kt_bvh::BVHWidth::BVH2;
+		desc.width = g_bvh4 ? kt_bvh::BVHWidth::BVH4 : kt_bvh::BVHWidth::BVH2;
 
 		bvh2 = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);
 
 		kt_bvh::BVHBuildResult const result = kt_bvh::bvh_build_result(bvh2);
-		ctx.nodes = (kt_bvh::BVH2Node*)malloc(result.total_nodes * sizeof(kt_bvh::BVH2Node));
 
-		kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.nodes, result.total_nodes);
+		if (g_bvh4)
+		{
+			ctx.bvh4 = (kt_bvh::BVH4Node*)malloc(result.total_interior_nodes * sizeof(kt_bvh::BVH4Node));
+			kt_bvh::bvh4_intermediate_to_flat(bvh2, ctx.bvh4, result.total_interior_nodes);
+		}
+		else
+		{
+			ctx.bvh2 = (kt_bvh::BVH2Node*)malloc(result.total_nodes * sizeof(kt_bvh::BVH2Node));
+			kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.bvh2, result.total_nodes);
+		}
+
 
 		// Write out primitive id without mesh id.
 		ctx.prim_id_buf = (uint32_t*)malloc(sizeof(uint32_t) * result.prim_id_array_size);
@@ -433,7 +586,6 @@ int main(int argc, char** _argv)
 
 
 	ctx.image = (uint8_t*)malloc(sizeof(uint32_t) * c_width * c_height);
-
 
 	Camera cam;
 	//cam.init(Vec3{ .5f, 0.5f, .5f }, vec3_splat(0.0f), 70.0f, float(c_width) / float(c_height), 1.5f);

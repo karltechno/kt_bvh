@@ -159,6 +159,7 @@ struct BVHBuildDesc
 		sah_traversal_cost = _traversal_cost;
 		min_leaf_prims = _min_prims_per_leaf;
 		max_leaf_prims = _max_prims_per_leaf;
+		max_branching_factor = 2;
 	}
 
 	void set_median_split(uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
@@ -166,6 +167,7 @@ struct BVHBuildDesc
 		type = BVHBuildType::MedianSplit;
 		min_leaf_prims = _min_prims_per_leaf;
 		max_leaf_prims = _max_prims_per_leaf;
+		max_branching_factor = 2;
 	}
 
 	// BVH build algorithm.
@@ -180,6 +182,9 @@ struct BVHBuildDesc
 	// Number of surface area heuristic binning buckets.
 	uint32_t sah_buckets;
 
+	// Maximum branching factor of nodes.
+	uint32_t max_branching_factor;
+
 	// Estimated cost of traversal for surface area heuristic (relative to intersection cost).
 	float sah_traversal_cost;
 };
@@ -188,26 +193,39 @@ struct IntermediateBVHNode
 {
 	bool is_leaf() const
 	{
-		return children[0] == nullptr;
+		return num_children == 0;
 	}
 
+	// AABB of this node.
 	float aabb_min[3];
 	float aabb_max[3];
 
+	// Child nodes (leaf or interior).
 	IntermediateBVHNode* children[BVHBuildDesc::c_max_branching_factor];
+	
+	// SAH split axis for child nodes.
 	uint32_t split_axis[BVHBuildDesc::c_max_branching_factor - 1];
 
+	// Number of child nodes.
+	uint32_t num_children;
+
+	// Offset and count into primitive ID array.
 	uint32_t leaf_prim_offset;
 	uint32_t leaf_num_prims;
 };
 
 struct BVHBuildResult
 {
+	// Root of BVH tree.
 	IntermediateBVHNode const* root;
+
+	// Total amount of intermediate nodes in tree.
 	uint32_t total_nodes;
 
+	// Maximum depth of tree.
 	uint32_t max_depth;
 
+	// Primitive ID array that intermediate nodes point to.
 	PrimitiveID const* prim_id_array;
 	uint32_t prim_id_array_size;
 };

@@ -23,13 +23,15 @@ if(MSVC)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG")
 endif()
 
-if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+if(MSVC)
+    set_target_properties(kt_bvh pathtracer_test PROPERTIES
+        COMPILE_FLAGS "/W4 /WX -DNOMINMAX"
+elseif("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
     set_target_properties(kt_bvh pathtracer_test PROPERTIES
         COMPILE_FLAGS "-Wall -Werror"
 )
-elseif("${CMAKE_C_COMPILER_ID}" STREQUAL "MSVC")
-    set_target_properties(kt_bvh pathtracer_test PROPERTIES
-        COMPILE_FLAGS "/W3 /WX -DNOMINMAX"
+
+
 )
 
 endif()

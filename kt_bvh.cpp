@@ -132,16 +132,6 @@ static Vec3 operator*(Vec3 const& _v, float _scalar)
 #endif
 }
 
-static Vec3 operator/(Vec3 const& _v, float _scalar)
-{
-#if KT_BVH_SSE
-	return Vec3{ _mm_mul_ps(_v.xmm, _mm_set1_ps(1.0f / _scalar)) };
-#else
-	float const rcp = 1.0f / _scalar;
-	return Vec3{ _v.x * rcp, _v.y * rcp, _v.z * rcp };
-#endif
-}
-
 static Vec3 min(Vec3 const& _lhs, Vec3 const& _rhs)
 {
 #if KT_BVH_SSE
@@ -462,6 +452,7 @@ static void mesh_get_prim_unindexed(TriMesh const& _mesh, uint32_t _prim_idx, Ve
 	memcpy(o_v2, (uint8_t*)_mesh.vertices + _mesh.vertex_stride * (_prim_idx * 3 + 2), sizeof(float[3]));
 }
 
+/*
 static void mesh_get_prim(TriMesh const& _mesh, uint32_t _prim_idx, Vec3* o_v0, Vec3* o_v1, Vec3* o_v2)
 {
 	switch (_mesh.index_type)
@@ -471,9 +462,10 @@ static void mesh_get_prim(TriMesh const& _mesh, uint32_t _prim_idx, Vec3* o_v0, 
 		case TriMesh::IndexType::UnIndexed: mesh_get_prim_unindexed(_mesh, _prim_idx, o_v0, o_v1, o_v2); break;
 	}
 }
+*/
 
 template <void (GetPrimT)(TriMesh const&, uint32_t, Vec3*, Vec3*, Vec3*)>
-static void build_prim_info_impl(BVHBuilderContext& _ctx, TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr)
+static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr)
 {
 	for (uint32_t i = 0; i < _mesh.total_prims(); ++i)
 	{
@@ -497,9 +489,9 @@ static void build_prim_info(BVHBuilderContext& _ctx)
 		TriMesh const& mesh = _ctx.meshes[mesh_idx];
 		switch (mesh.index_type)
 		{
-			case TriMesh::IndexType::U16: build_prim_info_impl<mesh_get_prim_idx_u16>(_ctx, mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
-			case TriMesh::IndexType::U32: build_prim_info_impl<mesh_get_prim_idx_u32>(_ctx, mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
-			case TriMesh::IndexType::UnIndexed: build_prim_info_impl<mesh_get_prim_unindexed>(_ctx, mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
+			case TriMesh::IndexType::U16: build_prim_info_impl<mesh_get_prim_idx_u16>(mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
+			case TriMesh::IndexType::U32: build_prim_info_impl<mesh_get_prim_idx_u32>(mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
+			case TriMesh::IndexType::UnIndexed: build_prim_info_impl<mesh_get_prim_unindexed>(mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
 		}
 
 		prim_idx += mesh.total_prims();

@@ -17,6 +17,11 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#endif
+
 void* malloc16(size_t _size)
 {
 	return _aligned_malloc(_size, 16);
@@ -45,6 +50,7 @@ static TimeAccumulator s_intersectTime = { "tri_intersect", 0, 0 };
 	#pragma intrinsic(_BitScanForward)
 #endif
 
+/*
 static uint32_t find_first_set_lsb(uint32_t _v)
 {
 #ifdef _MSC_VER
@@ -54,6 +60,7 @@ static uint32_t find_first_set_lsb(uint32_t _v)
 	return __builtin_ctz(_v);
 #endif
 }
+*/
 
 struct ScopedPerfTimer
 {
@@ -535,6 +542,8 @@ static void print_perf_timer(TimeAccumulator const& accum)
 
 int main(int argc, char** _argv)
 {
+	void(argc), void(_argv);
+
 	TracerCtx ctx;
 
 	ctx.mesh = fast_obj_read("models/living_room/living_room.obj");
@@ -640,3 +649,7 @@ int main(int argc, char** _argv)
 	print_perf_timer(s_bvhTraverseTime);
 	print_perf_timer(s_intersectTime);
 }
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif

@@ -548,9 +548,10 @@ int main(int argc, char** _argv)
 	tri_mesh.set_indices(ctx.pos_indices, ctx.mesh->face_count);
 	tri_mesh.set_vertices(ctx.mesh->positions, sizeof(float[3]), ctx.mesh->position_count);
 	kt_bvh::IntermediateBVH* bvhn;
+	kt_bvh::BVHBuildDesc desc;
+
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
-		kt_bvh::BVHBuildDesc desc;
 		//desc.set_median_split(4);
 		desc.set_binned_sah(0.85f, 16);
 		desc.width = g_bvh4 ? kt_bvh::BVHWidth::BVH4 : kt_bvh::BVHWidth::BVH2;
@@ -598,6 +599,7 @@ int main(int argc, char** _argv)
 			++tri_write;
 		}
 	}
+	kt_bvh::bvh_free_intermediate(bvhn);
 
 
 	ctx.image = (uint8_t*)malloc(sizeof(uint32_t) * c_width * c_height);
@@ -605,6 +607,9 @@ int main(int argc, char** _argv)
 	Camera cam;
 	//cam.init(Vec3{ .5f, 0.5f, .5f }, vec3_splat(0.0f), 70.0f, float(c_width) / float(c_height), 1.5f);
 	cam.init(Vec3{ 0.0f, 1.5f, 0.5f}, Vec3{0.0f, 1.5f, 2.0f}, 70.0f, float(c_width) / float(c_height), 0.5f);
+
+	printf("Tracing BVH%u - split type: %s\n", desc.get_branching_factor(), desc.type == kt_bvh::BVHBuildType::MedianSplit ? "Median" : "SAH");
+
 
 	uint8_t* image_ptr = ctx.image;
 	for (uint32_t y = 0; y < c_height; ++y)
@@ -620,8 +625,6 @@ int main(int argc, char** _argv)
 
 	stbi_flip_vertically_on_write(1);
 	stbi_write_bmp("image.bmp", c_width, c_height, 4, ctx.image);
-
-	kt_bvh::bvh_free_intermediate(bvhn);
 
 	print_perf_timer(s_bvhBuildTime);
 	print_perf_timer(s_bvhTraverseTime);

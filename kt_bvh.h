@@ -155,9 +155,8 @@ struct BVH4Node
 	uint16_t num_prims_in_leaf[4];
 	uint8_t split_axis[3];
 
-	uint8_t _pad_;
+	uint32_t _pad_;
 };
-
 
 enum class BVHBuildType
 {

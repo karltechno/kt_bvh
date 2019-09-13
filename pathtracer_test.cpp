@@ -17,6 +17,16 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+void* malloc16(size_t _size)
+{
+	return _aligned_malloc(_size, 16);
+}
+
+void free16(void* _ptr)
+{
+	return _aligned_free(_ptr);
+}
+
 bool g_bvh4 = true;
 
 struct TimeAccumulator
@@ -135,11 +145,11 @@ struct TracerCtx
 	~TracerCtx()
 	{
 		fast_obj_destroy(mesh);
-		free(bvh4);
-		free(pos_indices);
-		free(prim_id_buf);
-		free(image);
-		free(preprocessed_tris);
+		free16(bvh4);
+		free16(pos_indices);
+		free16(prim_id_buf);
+		free16(image);
+		free16(preprocessed_tris);
 	}
 
 	fastObjMesh* mesh = nullptr;
@@ -562,18 +572,18 @@ int main(int argc, char** _argv)
 
 		if (g_bvh4)
 		{
-			ctx.bvh4 = (kt_bvh::BVH4Node*)malloc(result.total_interior_nodes * sizeof(kt_bvh::BVH4Node));
+			ctx.bvh4 = (kt_bvh::BVH4Node*)malloc16(result.total_interior_nodes * sizeof(kt_bvh::BVH4Node));
 			kt_bvh::bvh4_intermediate_to_flat(bvhn, ctx.bvh4, result.total_interior_nodes);
 		}
 		else
 		{
-			ctx.bvh2 = (kt_bvh::BVH2Node*)malloc(result.total_nodes * sizeof(kt_bvh::BVH2Node));
+			ctx.bvh2 = (kt_bvh::BVH2Node*)malloc16(result.total_nodes * sizeof(kt_bvh::BVH2Node));
 			kt_bvh::bvh2_intermediate_to_flat(bvhn, ctx.bvh2, result.total_nodes);
 		}
 
 
 		// Write out primitive id without mesh id.
-		ctx.prim_id_buf = (uint32_t*)malloc(sizeof(uint32_t) * result.prim_id_array_size);
+		ctx.prim_id_buf = (uint32_t*)malloc16(sizeof(uint32_t) * result.prim_id_array_size);
 		for (uint32_t i = 0; i < result.prim_id_array_size; ++i)
 		{
 			ctx.prim_id_buf[i] = result.prim_id_array[i].mesh_prim_idx;
@@ -581,7 +591,7 @@ int main(int argc, char** _argv)
 
 		// preprocess tris for moller trumbore intersection
 
-		ctx.preprocessed_tris = (PreprocessedTri*)malloc(sizeof(PreprocessedTri) * result.prim_id_array_size * 3);
+		ctx.preprocessed_tris = (PreprocessedTri*)malloc16(sizeof(PreprocessedTri) * result.prim_id_array_size * 3);
 
 		uint32_t* prim_begin = ctx.prim_id_buf;
 		uint32_t* prim_end = prim_begin + result.prim_id_array_size;

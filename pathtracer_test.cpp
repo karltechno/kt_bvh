@@ -8,7 +8,6 @@
 #include <math.h>
 #include <float.h>
 #include <chrono>
-#include <utility>
 
 #include "kt_bvh.h"
 
@@ -548,7 +547,7 @@ int main(int argc, char** _argv)
 	kt_bvh::TriMesh tri_mesh;
 	tri_mesh.set_indices(ctx.pos_indices, ctx.mesh->face_count);
 	tri_mesh.set_vertices(ctx.mesh->positions, sizeof(float[3]), ctx.mesh->position_count);
-	kt_bvh::IntermediateBVH* bvh2;
+	kt_bvh::IntermediateBVH* bvhn;
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
 		kt_bvh::BVHBuildDesc desc;
@@ -556,19 +555,19 @@ int main(int argc, char** _argv)
 		desc.set_binned_sah(0.85f, 16);
 		desc.width = g_bvh4 ? kt_bvh::BVHWidth::BVH4 : kt_bvh::BVHWidth::BVH2;
 
-		bvh2 = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);
+		bvhn = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);
 
-		kt_bvh::BVHBuildResult const result = kt_bvh::bvh_build_result(bvh2);
+		kt_bvh::BVHBuildResult const result = kt_bvh::bvh_build_result(bvhn);
 
 		if (g_bvh4)
 		{
 			ctx.bvh4 = (kt_bvh::BVH4Node*)malloc(result.total_interior_nodes * sizeof(kt_bvh::BVH4Node));
-			kt_bvh::bvh4_intermediate_to_flat(bvh2, ctx.bvh4, result.total_interior_nodes);
+			kt_bvh::bvh4_intermediate_to_flat(bvhn, ctx.bvh4, result.total_interior_nodes);
 		}
 		else
 		{
 			ctx.bvh2 = (kt_bvh::BVH2Node*)malloc(result.total_nodes * sizeof(kt_bvh::BVH2Node));
-			kt_bvh::bvh2_intermediate_to_flat(bvh2, ctx.bvh2, result.total_nodes);
+			kt_bvh::bvh2_intermediate_to_flat(bvhn, ctx.bvh2, result.total_nodes);
 		}
 
 
@@ -622,7 +621,7 @@ int main(int argc, char** _argv)
 	stbi_flip_vertically_on_write(1);
 	stbi_write_bmp("image.bmp", c_width, c_height, 4, ctx.image);
 
-	kt_bvh::bvh_free_intermediate(bvh2);
+	kt_bvh::bvh_free_intermediate(bvhn);
 
 	print_perf_timer(s_bvhBuildTime);
 	print_perf_timer(s_bvhTraverseTime);

@@ -15,7 +15,7 @@
 	#undef KT_BVH_COMPILER_MSVC
 	#define KT_BVH_COMPILER_MSVC	(1)
 #else
-	#error Compiler could not be detected.
+	#error Compiler not supported.
 #endif
 
 #if (KT_BVH_COMPILER_CLANG || KT_BVH_COMPILER_GCC)

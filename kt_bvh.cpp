@@ -5,6 +5,10 @@
 #include <float.h> // FLT_MAX
 #include <math.h> // NAN
 
+#if KT_BVH_SSE
+	#include <xmmintrin.h>
+#endif
+
 #define KT_BVH_ALLOCA(_size) ::alloca(_size)
 
 namespace kt_bvh
@@ -82,63 +86,95 @@ static AllocHooks malloc_hooks()
 	return hooks;
 }
 
-struct Vec3
+struct alignas(16) Vec3
 {
 	union
 	{
-		float data[3];
+#if KT_BVH_SSE
+		__m128 xmm;
+#endif
+		float data[4];
 
 		struct  
 		{
 			float x;
 			float y;
 			float z;
+			float w;
 		};
 	};
 };
 
 static Vec3 operator-(Vec3 const& _lhs, Vec3 const& _rhs)
 {
-	return Vec3 {_lhs.x - _rhs.x, _lhs.y - _rhs.y, _lhs.z - _rhs.z};
+#if KT_BVH_SSE
+	return Vec3{ _mm_sub_ps(_lhs.xmm, _rhs.xmm) };
+#else
+	return Vec3{ _lhs.x - _rhs.x, _lhs.y - _rhs.y, _lhs.z - _rhs.z };
+#endif
 }
 
 static Vec3 operator+(Vec3 const& _lhs, Vec3 const& _rhs)
 {
+#if KT_BVH_SSE
+	return Vec3{ _mm_add_ps(_lhs.xmm, _rhs.xmm) };
+#else
 	return Vec3{ _lhs.x + _rhs.x, _lhs.y + _rhs.y, _lhs.z + _rhs.z };
+#endif
 }
 
 static Vec3 operator*(Vec3 const& _v, float _scalar)
 {
+#if KT_BVH_SSE
+	return Vec3{ _mm_mul_ps(_v.xmm, _mm_set1_ps(_scalar)) };
+#else
 	return Vec3{ _v.x * _scalar, _v.y * _scalar, _v.z * _scalar};
+#endif
 }
 
 static Vec3 operator/(Vec3 const& _v, float _scalar)
 {
+#if KT_BVH_SSE
+	return Vec3{ _mm_mul_ps(_v.xmm, _mm_set1_ps(1.0f / _scalar)) };
+#else
 	float const rcp = 1.0f / _scalar;
 	return Vec3{ _v.x * rcp, _v.y * rcp, _v.z * rcp };
+#endif
 }
 
 static Vec3 min(Vec3 const& _lhs, Vec3 const& _rhs)
 {
+#if KT_BVH_SSE
+	return Vec3{ _mm_min_ps(_lhs.xmm, _rhs.xmm) };
+#else
 	Vec3 r;
 	r.x = min(_lhs.x, _rhs.x);
 	r.y = min(_lhs.y, _rhs.y);
 	r.z = min(_lhs.z, _rhs.z);
 	return r;
+#endif
 }
 
 static Vec3 max(Vec3 const& _lhs, Vec3 const& _rhs)
 {
+#if KT_BVH_SSE
+	return Vec3{ _mm_max_ps(_lhs.xmm, _rhs.xmm) };
+#else
 	Vec3 r;
 	r.x = max(_lhs.x, _rhs.x);
 	r.y = max(_lhs.y, _rhs.y);
 	r.z = max(_lhs.z, _rhs.z);
 	return r;
+#endif
 }
 
 static Vec3 vec3_splat(float _f)
 {
-	return Vec3{ _f, _f, _f };
+#if KT_BVH_SSE
+	return Vec3{ _mm_set1_ps(_f) };
+#else
+	return Vec3{ _f, _f, _f, _f };
+#endif
 }
 
 struct AABB
@@ -667,7 +703,6 @@ static uint32_t bvh2_eval_sah_split
 	{
 		incremental_reverse_aabb = aabb_union(incremental_reverse_aabb, bucket_info.buckets[i + 1].bounds);
 		incremental_reverse_prim_count += bucket_info.buckets[i + 1].num_prims;
-
 
 		uint32_t const countA = bucket_info.forward_prim_count[i];
 		uint32_t const countB = incremental_reverse_prim_count;

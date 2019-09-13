@@ -4,6 +4,7 @@
 #define KT_BVH_COMPILER_MSVC		(0)
 #define KT_BVH_COMPILER_CLANG		(0)
 #define KT_BVH_COMPILER_GCC			(0)
+#define KT_BVH_SSE					(0)
 
 #if defined(__clang__)
 	#undef KT_BVH_COMPILER_CLANG
@@ -16,6 +17,11 @@
 	#define KT_BVH_COMPILER_MSVC	(1)
 #else
 	#error Compiler not supported.
+#endif
+
+#if defined(__SSE__) || defined(_M_X64)
+	#undef KT_BVH_SSE
+	#define KT_BVH_SSE (1)
 #endif
 
 #if (KT_BVH_COMPILER_CLANG || KT_BVH_COMPILER_GCC)

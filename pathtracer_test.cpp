@@ -1,5 +1,6 @@
 #include <malloc.h>
 #include <xmmintrin.h>
+#include <intrin.h>
 
 #ifdef _MSC_VER
 #define _USE_MATH_DEFINES
@@ -43,7 +44,6 @@ struct TimeAccumulator
 
 static TimeAccumulator s_bvhBuildTime = { "bvh_build", 0, 0 };
 static TimeAccumulator s_bvhTraverseTime = { "bvh_traverse", 0, 0 };
-static TimeAccumulator s_intersectTime = { "tri_intersect", 0, 0 };
 
 #ifdef _MSC_VER
 	extern "C" unsigned char _BitScanForward(unsigned long * _Index, unsigned long _Mask);
@@ -347,8 +347,6 @@ Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 	uint32_t stack[128];
 	uint32_t stack_size = 0;
 
-	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
-
 	uint32_t const ray_dir_is_neg[3] = { _ray.d.x < 0.0f, _ray.d.y < 0.0f, _ray.d.z < 0.0f };
 	uint32_t node_idx = 0;
 
@@ -358,62 +356,62 @@ Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 		__m128 aabb_tmin;
 		__m128 const mask = intersect_ray_aabb_x4_soa(_ray, (float*)node.aabb_min_soa, (float*)node.aabb_max_soa, &aabb_tmin);
 
-		uint32_t leaves_to_visit = _mm_movemask_ps(_mm_and_ps(mask, _mm_cmpge_ps(_mm_set1_ps(result.t), aabb_tmin)));
+		uint32_t const leaves_to_visit = _mm_movemask_ps(_mm_and_ps(mask, _mm_cmpge_ps(_mm_set1_ps(result.t), aabb_tmin)));
 
-		uint32_t sortedIndices[4] = { 0, 1, 2, 3 };
-
-		uint32_t did_sort = 0;
-		if (!ray_dir_is_neg[node.split_axis[1]])
+		if (leaves_to_visit)
 		{
-			swap(sortedIndices[0], sortedIndices[2]);
-			swap(sortedIndices[1], sortedIndices[3]);
-			did_sort = 1;
-		}
+			alignas(16) uint32_t sortedIndices[4] = { 0, 1, 2, 3 };
 
-		if (!ray_dir_is_neg[node.split_axis[2 * (did_sort ^ 1)]])
-		{
-			swap(sortedIndices[2], sortedIndices[3]);
-		}
-
-		if (!ray_dir_is_neg[node.split_axis[2 * did_sort]])
-		{
-			swap(sortedIndices[0], sortedIndices[1]);
-		}
-
-		for (uint32_t i = 0; i < 4; ++i)
-		{
-			uint32_t const idx = sortedIndices[i];
-			if ((1 << idx) & leaves_to_visit)
+			if (!ray_dir_is_neg[node.split_axis[0]])
 			{
-				if (node.is_child_leaf(idx))
+				swap(sortedIndices[0], sortedIndices[1]);
+			}
+
+			if (!ray_dir_is_neg[node.split_axis[2]])
+			{
+				swap(sortedIndices[2], sortedIndices[3]);
+			}
+
+			if (!ray_dir_is_neg[node.split_axis[1]])
+			{
+				swap(sortedIndices[0], sortedIndices[2]);
+				swap(sortedIndices[1], sortedIndices[3]);
+			}
+
+			for (uint32_t i = 0; i < 4; ++i)
+			{
+				uint32_t const idx = sortedIndices[i];
+				if ((1 << idx) & leaves_to_visit)
 				{
-					ScopedPerfTimer isectTime(&s_intersectTime);
-
-					uint32_t* prims = _ctx.prim_id_buf + node.children[idx];
-					uint32_t const nprims = node.num_prims_in_leaf[idx];
-
-					PreprocessedTri* tris = _ctx.preprocessed_tris + node.children[idx];
-
-					for (uint32_t i = 0; i < nprims; ++i)
+					if (node.is_child_leaf(idx))
 					{
-						float local_t, local_u, local_v;
-						if (intersect_ray_tri(_ray, tris[i].v0, tris[i].v01, tris[i].v02, &local_t, &local_u, &local_v) && local_t < result.t)
+						uint32_t* prims = _ctx.prim_id_buf + node.children[idx];
+						uint32_t const nprims = node.num_prims_in_leaf[idx];
+
+						PreprocessedTri* tris = _ctx.preprocessed_tris + node.children[idx];
+
+						for (uint32_t i = 0; i < nprims; ++i)
 						{
-							result.t = local_t;
-							result.u = local_u;
-							result.v = local_v;
-							result.prim_idx = prims[i];
+							float local_t, local_u, local_v;
+							if (intersect_ray_tri(_ray, tris[i].v0, tris[i].v01, tris[i].v02, &local_t, &local_u, &local_v) && local_t < result.t)
+							{
+								result.t = local_t;
+								result.u = local_u;
+								result.v = local_v;
+								result.prim_idx = prims[i];
+							}
 						}
 					}
-				}
-				else
-				{
-					assert(stack_size < sizeof(stack) / sizeof(*stack));
-					assert(node.children[i] != UINT32_MAX);
-					stack[stack_size++] = node.children[idx];
+					else
+					{
+						assert(stack_size < sizeof(stack) / sizeof(*stack));
+						assert(node.children[i] != UINT32_MAX);
+						stack[stack_size++] = node.children[idx];
+					}
 				}
 			}
 		}
+
 
 		if (!stack_size)
 		{
@@ -434,8 +432,6 @@ Intersection trace_bvh2(TracerCtx const& _ctx, Ray const& _ray)
 	uint32_t stack_size = 0;
 	uint32_t node_idx = 0;
 
-	ScopedPerfTimer isectTime(&s_bvhTraverseTime);
-
 	uint32_t const ray_dir_is_neg[3] = { _ray.d.x < 0.0f, _ray.d.y < 0.0f, _ray.d.z < 0.0f };
 
 	do
@@ -446,8 +442,6 @@ Intersection trace_bvh2(TracerCtx const& _ctx, Ray const& _ray)
 		{
 			if (node.is_leaf())
 			{
-				ScopedPerfTimer isectTime(&s_intersectTime);
-
 				uint32_t* prims = _ctx.prim_id_buf + node.right_child_or_prim_offset;
 				uint32_t const nprims = node.num_prims_in_leaf;
 
@@ -631,23 +625,28 @@ int main(int argc, char** _argv)
 
 
 	uint8_t* image_ptr = ctx.image;
-	for (uint32_t y = 0; y < c_height; ++y)
+
 	{
-		for (uint32_t x = 0; x < c_width; ++x)
+		ScopedPerfTimer isectTime(&s_bvhTraverseTime);
+
+		for (uint32_t y = 0; y < c_height; ++y)
 		{
-			Ray const& ray = cam.get_ray(x / float(c_width), y / float(c_height));
-			uint32_t const col = trace_test(ctx, ray);
-			memcpy(image_ptr, &col, sizeof(uint32_t));
-			image_ptr += 4;
+			for (uint32_t x = 0; x < c_width; ++x)
+			{
+				Ray const& ray = cam.get_ray(x / float(c_width), y / float(c_height));
+				uint32_t const col = trace_test(ctx, ray);
+				memcpy(image_ptr, &col, sizeof(uint32_t));
+				image_ptr += 4;
+			}
 		}
 	}
+
 
 	stbi_flip_vertically_on_write(1);
 	stbi_write_bmp("image.bmp", c_width, c_height, 4, ctx.image);
 
 	print_perf_timer(s_bvhBuildTime);
 	print_perf_timer(s_bvhTraverseTime);
-	print_perf_timer(s_intersectTime);
 }
 
 #ifdef __clang__

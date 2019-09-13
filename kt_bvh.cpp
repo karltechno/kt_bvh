@@ -11,6 +11,11 @@
 
 #define KT_BVH_ALLOCA(_size) ::alloca(_size)
 
+#if KT_BVH_COMPILER_MSVC
+	#pragma warning(push)
+	#pragma warning(disable: 4201) // nonstandard extension used : nameless struct/union
+#endif
+
 namespace kt_bvh
 {
 
@@ -877,10 +882,10 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 
 		PreSplitIntermediateBVHNode& to_split = presplit_nodes[best_leaf_idx];
 		uint32_t const child_split_axis = split_axis_from_aabb(to_split.centroid_aabb);
-		uint32_t const middle_prim_split_idx = bvhn_eval_split(_ctx, to_split.enclosing_aabb, to_split.centroid_aabb, child_split_axis, to_split.prim_begin, to_split.prim_end);
+		uint32_t const child_middle_prim_split_idx = bvhn_eval_split(_ctx, to_split.enclosing_aabb, to_split.centroid_aabb, child_split_axis, to_split.prim_begin, to_split.prim_end);
 
 		// TODO: Check other splits??
-		if (middle_prim_split_idx == UINT32_MAX)
+		if (child_middle_prim_split_idx == UINT32_MAX)
 		{
 			break;
 		}
@@ -898,11 +903,11 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 		uint32_t const split_begin = to_split.prim_begin;
 		uint32_t const split_end = to_split.prim_end;
 
-		KT_BVH_ASSERT(middle_prim_split_idx > split_begin && middle_prim_split_idx < split_end);
+		KT_BVH_ASSERT(child_middle_prim_split_idx > split_begin && child_middle_prim_split_idx < split_end);
 
 		presplit_nodes[best_leaf_idx].prim_begin = split_begin;
-		presplit_nodes[best_leaf_idx].prim_end = middle_prim_split_idx;
-		presplit_nodes[best_leaf_idx + 1].prim_begin = middle_prim_split_idx;
+		presplit_nodes[best_leaf_idx].prim_end = child_middle_prim_split_idx;
+		presplit_nodes[best_leaf_idx + 1].prim_begin = child_middle_prim_split_idx;
 		presplit_nodes[best_leaf_idx + 1].prim_end = split_end;
 		split_axis[best_leaf_idx] = child_split_axis;
 
@@ -1064,7 +1069,7 @@ uint32_t bvh4_write_flat_recursive(BVH4FlatWriterCtx* _ctx, IntermediateBVHNode*
 
 	for (uint32_t i = 0; i < _node->num_children - 1; ++i)
 	{
-		flatnode->split_axis[i] = _node->split_axis[i];
+		flatnode->split_axis[i] = uint8_t(_node->split_axis[i]);
 	}
 
 	for (uint32_t i = 0; i < _node->num_children; ++i)
@@ -1079,7 +1084,8 @@ uint32_t bvh4_write_flat_recursive(BVH4FlatWriterCtx* _ctx, IntermediateBVHNode*
 
 		if (child->is_leaf())
 		{
-			flatnode->num_prims_in_leaf[i] = child->leaf_num_prims;
+			KT_BVH_ASSERT(child->leaf_num_prims <= UINT16_MAX);
+			flatnode->num_prims_in_leaf[i] = uint16_t(child->leaf_num_prims);
 			flatnode->children[i] = child->leaf_prim_offset;
 		}
 		else
@@ -1122,3 +1128,8 @@ bool bvh4_intermediate_to_flat(IntermediateBVH const* _bvh4, BVH4Node* o_nodes, 
 }
 
 } // namespace kt_bvh
+
+
+#if KT_BVH_COMPILER_MSVC
+	#pragma warning(pop)
+#endif

@@ -19,9 +19,15 @@
 #include "stb_image_write.h"
 
 #ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-braces"
+	#pragma clang diagnostic push
+	#pragma clang diagnostic ignored "-Wmissing-braces"
 #endif
+
+#if KT_BVH_COMPILER_MSVC
+	#pragma warning(push)
+	#pragma warning(disable: 4201) // nonstandard extension used : nameless struct/union
+#endif
+
 
 void* malloc16(size_t _size)
 {
@@ -188,12 +194,12 @@ struct Ray
 		}
 	}
 
+	__m128 o_x4[3];
+	__m128 rcp_d_x4[3];
+
 	Vec3 o;
 	Vec3 d;
 	Vec3 rcp_d;
-
-	__m128 o_x4[3];
-	__m128 rcp_d_x4[3];
 };
 
 template <typename T>
@@ -390,15 +396,15 @@ Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 
 						PreprocessedTri* tris = _ctx.preprocessed_tris + node.children[idx];
 
-						for (uint32_t i = 0; i < nprims; ++i)
+						for (uint32_t j = 0; j < nprims; ++j)
 						{
 							float local_t, local_u, local_v;
-							if (intersect_ray_tri(_ray, tris[i].v0, tris[i].v01, tris[i].v02, &local_t, &local_u, &local_v) && local_t < result.t)
+							if (intersect_ray_tri(_ray, tris[j].v0, tris[j].v01, tris[j].v02, &local_t, &local_u, &local_v) && local_t < result.t)
 							{
 								result.t = local_t;
 								result.u = local_u;
 								result.v = local_v;
-								result.prim_idx = prims[i];
+								result.prim_idx = prims[j];
 							}
 						}
 					}
@@ -651,4 +657,8 @@ int main(int argc, char** _argv)
 
 #ifdef __clang__
 #pragma clang diagnostic pop
+#endif
+
+#if KT_BVH_COMPILER_MSVC
+	#pragma warning(pop)
 #endif

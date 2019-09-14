@@ -192,7 +192,7 @@ struct BVHBuildDesc
 	}
 
 	// BVH build algorithm.
-	BVHBuildType type = BVHBuildType::SBVH;
+	BVHBuildType type = BVHBuildType::TopDownBinnedSAH;
 
 	// Threshold of primitive to force leaf creation.
 	uint32_t min_leaf_prims = c_default_min_prims_per_leaf;

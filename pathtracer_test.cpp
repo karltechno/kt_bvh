@@ -570,8 +570,8 @@ int main(int argc, char** _argv)
 
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
-		//desc.set_median_split(4);
-		desc.set_binned_sah(0.85f, 16, false);
+        //desc.type = kt_bvh::BVHBuildType::MedianSplit;
+        desc.type = kt_bvh::BVHBuildType::TopDownBinnedSAH;
 		desc.width = g_bvh4 ? kt_bvh::BVHWidth::BVH4 : kt_bvh::BVHWidth::BVH2;
 
 		bvhn = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);

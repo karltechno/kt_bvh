@@ -957,7 +957,7 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 
 		KT_BVH_ASSERT(num_children <= BVHBuildDesc::c_max_branching_factor);
 
-		// Shuffle up to make room for this split and retain split_axis orodering (if we are splitting in the middle of the array).
+		// Shuffle up to make room for this split and retain split_axis ordering (if we are splitting in the middle of the array).
 		for (uint32_t split_insert = num_children - 1; split_insert > best_leaf_idx; --split_insert)
 		{
 			presplit_nodes[split_insert + 1] = presplit_nodes[split_insert];

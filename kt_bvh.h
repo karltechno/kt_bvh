@@ -176,34 +176,9 @@ struct BVHBuildDesc
 
 	static uint32_t const c_default_min_prims_per_leaf = 4;
 	static uint32_t const c_default_max_prims_per_leaf = 8;
+    static uint32_t const c_default_sah_buckets = 16;
 
-	static uint32_t const c_sah_max_buckets = 32;
-
-	static BVHBuildDesc default_desc()
-	{
-		BVHBuildDesc ret;
-		ret.set_binned_sah(0.8f);
-		return ret;
-	}
-
-	void set_binned_sah(float _traversal_cost, uint32_t _num_buckets = 16, bool _exhaustive = true, uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
-	{
-		type = BVHBuildType::TopDownBinnedSAH;
-		sah_buckets = _num_buckets > c_sah_max_buckets ? c_sah_max_buckets : _num_buckets;
-		sah_traversal_cost = _traversal_cost;
-		min_leaf_prims = _min_prims_per_leaf;
-		max_leaf_prims = _max_prims_per_leaf;
-        sah_exhaustive_axis_test = _exhaustive;
-		width = BVHWidth::BVH2;
-	}
-
-	void set_median_split(uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
-	{
-		type = BVHBuildType::MedianSplit;
-		min_leaf_prims = _min_prims_per_leaf;
-		max_leaf_prims = _max_prims_per_leaf;
-		width = BVHWidth::BVH2;
-	}
+	static uint32_t const c_max_sah_buckets = 32;
 
 	uint32_t get_branching_factor() const
 	{
@@ -217,25 +192,25 @@ struct BVHBuildDesc
 	}
 
 	// BVH build algorithm.
-	BVHBuildType type;
+	BVHBuildType type = BVHBuildType::SBVH;
 
 	// Threshold of primitive to force leaf creation.
-	uint32_t min_leaf_prims;
+	uint32_t min_leaf_prims = c_default_min_prims_per_leaf;
 
 	// Maximum amount of primitives per leaf, nodes will be further split to accommodate.
-	uint32_t max_leaf_prims;
+	uint32_t max_leaf_prims = c_default_max_prims_per_leaf;
 
 	// Number of surface area heuristic binning buckets.
-	uint32_t sah_buckets;
+	uint32_t sah_buckets = c_default_sah_buckets;
 
 	// Width of BVH.
-	BVHWidth width;
+	BVHWidth width = BVHWidth::BVH2;
 
 	// Estimated cost of traversal for surface area heuristic (relative to intersection cost).
-	float sah_traversal_cost;
+	float sah_traversal_cost = 0.85f;
 
     // Should SAH check all axis, or just major axis of AABB.
-    bool sah_exhaustive_axis_test;
+    bool sah_exhaustive_axis_test = true;
 };
 
 struct IntermediateBVHNode

@@ -56,17 +56,17 @@ static TimeAccumulator s_bvhTraverseTime = { "bvh_traverse", 0, 0 };
 	#pragma intrinsic(_BitScanForward)
 #endif
 
-/*
-static uint32_t find_first_set_lsb(uint32_t _v)
-{
-#ifdef _MSC_VER
-	unsigned long idx;
-	return ::_BitScanForward(&idx, _v) ? idx : 32;
-#else
-	return __builtin_ctz(_v);
-#endif
-}
-*/
+//
+//static uint32_t find_first_set_lsb(uint32_t _v)
+//{
+//#ifdef _MSC_VER
+//	unsigned long idx;
+//	return ::_BitScanForward(&idx, _v) ? idx : 32;
+//#else
+//	return __builtin_ctz(_v);
+//#endif
+//}
+
 
 struct ScopedPerfTimer
 {
@@ -345,7 +345,6 @@ struct Intersection
 	float t = FLT_MAX;
 };
 
-
 Intersection trace_bvh4(TracerCtx const& _ctx, Ray const& _ray)
 {
 	Intersection result;
@@ -549,7 +548,7 @@ int main(int argc, char** _argv)
 	ctx.mesh = fast_obj_read("models/living_room/living_room.obj");
 
 	// Build linear index array
-	ctx.pos_indices = (uint32_t*)malloc(sizeof(uint32_t) * ctx.mesh->face_count * 3);
+	ctx.pos_indices = (uint32_t*)malloc16(sizeof(uint32_t) * ctx.mesh->face_count * 3);
 
 	{
 		uint32_t* pnext = ctx.pos_indices;
@@ -572,7 +571,7 @@ int main(int argc, char** _argv)
 	{
 		ScopedPerfTimer isectTime(&s_bvhBuildTime);
 		//desc.set_median_split(4);
-		desc.set_binned_sah(0.85f, 16);
+		desc.set_binned_sah(0.85f, 16, false);
 		desc.width = g_bvh4 ? kt_bvh::BVHWidth::BVH4 : kt_bvh::BVHWidth::BVH2;
 
 		bvhn = kt_bvh::bvh_build_intermediate(&tri_mesh, 1, desc);
@@ -621,7 +620,7 @@ int main(int argc, char** _argv)
 	kt_bvh::bvh_free_intermediate(bvhn);
 
 
-	ctx.image = (uint8_t*)malloc(sizeof(uint32_t) * c_width * c_height);
+	ctx.image = (uint8_t*)malloc16(sizeof(uint32_t) * c_width * c_height);
 
 	Camera cam;
 	//cam.init(Vec3{ .5f, 0.5f, .5f }, vec3_splat(0.0f), 70.0f, float(c_width) / float(c_height), 1.5f);

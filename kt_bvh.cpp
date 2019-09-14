@@ -19,6 +19,8 @@
 namespace kt_bvh
 {
 
+static const uint32_t c_invalid_split = UINT32_MAX;
+
 template <typename T>
 static T min(T _lhs, T _rhs)
 {
@@ -211,6 +213,25 @@ static float aabb_surface_area(AABB const& _aabb)
 	Vec3 const diag = _aabb.max - _aabb.min;
 	return (diag.x * diag.y + diag.x * diag.z + diag.y * diag.z) * 2.0f;
 }
+
+static uint32_t aabb_major_axis(AABB const& _aabb)
+{
+    Vec3 const aabb_range = _aabb.max - _aabb.min;
+
+    uint32_t split_axis = 0;
+
+    if (aabb_range.y > aabb_range.x)
+    {
+        split_axis = 1;
+    }
+    if (aabb_range.z > aabb_range.data[split_axis])
+    {
+        split_axis = 2;
+    }
+
+    return split_axis;
+}
+
 
 struct MemArena
 {
@@ -512,6 +533,25 @@ static void node_copy_aabb(IntermediateBVHNode* _node, AABB const& _aabb)
 	memcpy(_node->aabb_max, _aabb.max.data, sizeof(float[3]));
 }
 
+struct SAHSplitResult
+{
+    bool is_valid()
+    {
+        return axis != UINT32_MAX;
+    }
+
+    float best_sah_cost() const
+    {
+        return min(sah_cost, sah_leaf_cost);
+    }
+
+    uint32_t axis = UINT32_MAX;
+    uint32_t split_idx;
+
+    float sah_cost = FLT_MAX;
+    float sah_leaf_cost = FLT_MAX;
+};
+
 struct PreSplitIntermediateBVHNode
 {
 	uint32_t num_prims() const
@@ -527,7 +567,7 @@ struct PreSplitIntermediateBVHNode
 	uint32_t prim_end;
 };
 
-static IntermediateBVHNode* build_bvhn_leaf_node(BVHBuilderContext& _ctx, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
+static IntermediateBVHNode* build_leaf_node(BVHBuilderContext& _ctx, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
 {
 	KT_BVH_ASSERT(_prim_end > _prim_begin);
 
@@ -612,7 +652,7 @@ static IntermediateBVHNode* build_bvhn_leaf_node(BVHBuilderContext& _ctx, uint32
 
 	for (uint32_t i = 0; i < num_children; ++i)
 	{
-		IntermediateBVHNode* child = build_bvhn_leaf_node(_ctx, _depth + 1, presplit_nodes[i].prim_begin, presplit_nodes[i].prim_end);
+		IntermediateBVHNode* child = build_leaf_node(_ctx, _depth + 1, presplit_nodes[i].prim_begin, presplit_nodes[i].prim_end);
 		subtree_root->children[i] = child;
 		enclosing_aabb = aabb_union(enclosing_aabb, aabb_init(child->aabb_min, child->aabb_max));
 	}
@@ -643,7 +683,7 @@ struct SAHBucketingInfo
 	uint32_t forward_prim_count[BVHBuildDesc::c_sah_max_buckets - 1] = {};
 };
 
-static uint32_t bvh2_eval_sah_split
+static SAHSplitResult eval_sah_split
 (
 	BVHBuilderContext& _ctx, 
 	AABB const& _enclosing_aabb,
@@ -653,14 +693,14 @@ static uint32_t bvh2_eval_sah_split
 	uint32_t _prim_end
 )
 {
+    SAHSplitResult split_result;
 	SAHBucketingInfo bucket_info(_ctx.build_desc.sah_buckets);
 
 	float const split_axis_len = (_centroid_aabb.max - _centroid_aabb.min).data[_split_axis];
 
-	// TODO: Evaluate all 3 axis?
 	if (split_axis_len <= 0.0001f)
 	{
-		return UINT32_MAX;
+		return split_result;
 	}
 
 	float const project_dim_constant = bucket_info.num_buckets / split_axis_len;
@@ -724,79 +764,105 @@ static uint32_t bvh2_eval_sah_split
 		}
 	}
 
-	float const leaf_cost = float(nprims);
+    if (best_split == UINT32_MAX)
+    {
+        return split_result;
+    }
 
-	if ((leaf_cost <= best_cost && nprims <= _ctx.build_desc.max_leaf_prims) || best_split == UINT32_MAX)
-	{
-		return UINT32_MAX;
-	}
+    split_result.axis = _split_axis;
+    split_result.split_idx = best_split;
+    split_result.sah_cost = best_cost;
+    split_result.sah_leaf_cost = float(nprims);
 
-	IntermediatePrimitive* mid = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end, 
-	[project_dim_constant, _split_axis, &_centroid_aabb, &bucket_info, best_split](IntermediatePrimitive const& _prim) -> bool
-	{
-		float const project_to_dim = (_prim.origin - _centroid_aabb.min).data[_split_axis] * project_dim_constant;
-		uint32_t const bucket = min(bucket_info.num_buckets - 1u, uint32_t(project_to_dim));
-		return bucket <= best_split;
-	});
-
-	uint32_t const mid_idx = uint32_t(mid - _ctx.primitive_info);
-	return mid_idx;
+    return split_result;
 }
 
-static uint32_t bvhn_eval_split
+uint32_t exec_sah_split(BVHBuilderContext& _ctx, SAHSplitResult const& _result, AABB const& _centroid_aabb, uint32_t _prim_begin, uint32_t _prim_end)
+{
+    uint32_t const nbuckets = _ctx.build_desc.sah_buckets;
+    float const split_axis_len = (_centroid_aabb.max - _centroid_aabb.min).data[_result.axis];
+    float const project_dim_constant = nbuckets / split_axis_len;
+
+    IntermediatePrimitive* mid = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
+                                           [&_result, nbuckets, &_centroid_aabb, project_dim_constant](IntermediatePrimitive const& _prim) -> bool
+    {
+        float const project_to_dim = (_prim.origin - _centroid_aabb.min).data[_result.axis] * project_dim_constant;
+        uint32_t const bucket = min(nbuckets - 1u, uint32_t(project_to_dim));
+        return bucket <= _result.split_idx;
+    });
+
+    uint32_t const mid_idx = uint32_t(mid - _ctx.primitive_info);
+    KT_BVH_ASSERT(mid_idx > _prim_begin && mid_idx < _prim_end);
+    return mid_idx;
+}
+
+static uint32_t split_node
 (
 	BVHBuilderContext& _ctx,
 	AABB const& _enclosing_aabb,
 	AABB const& _centroid_aabb,
-	uint32_t _split_axis,
 	uint32_t _prim_begin,
-	uint32_t _prim_end
+	uint32_t _prim_end,
+    uint32_t* o_split_axis
 )
 {
-	uint32_t middle_prim_split_idx = UINT32_MAX;
+	uint32_t middle_prim_split_idx = c_invalid_split;
 
 	switch (_ctx.build_desc.type)
 	{
+        case BVHBuildType::MedianSplit:
+        {
+            uint32_t const axis = aabb_major_axis(_centroid_aabb);
+            float const midpoint = (_centroid_aabb.max * 0.5f + _centroid_aabb.min * 0.5f).data[axis];
+            IntermediatePrimitive* midPrim = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
+                                                       [midpoint, axis](IntermediatePrimitive const& _val) { return _val.origin.data[axis] < midpoint; });
+            *o_split_axis = axis;
+            middle_prim_split_idx = uint32_t(midPrim - _ctx.primitive_info);
+            if (middle_prim_split_idx == _prim_begin || middle_prim_split_idx == _prim_end)
+            {
+                // TODO: Sort?
+                return (_prim_begin + _prim_end) / 2;
+            }
+            return middle_prim_split_idx;
+        };
+
 		case BVHBuildType::TopDownBinnedSAH:
 		{
-			middle_prim_split_idx = bvh2_eval_sah_split(_ctx, _enclosing_aabb, _centroid_aabb, _split_axis, _prim_begin, _prim_end);
+            SAHSplitResult best_object_split;
+
+            if (_ctx.build_desc.sah_exhaustive_axis_test)
+            {
+                for (uint32_t i = 0; i < 3; ++i)
+                {
+                    SAHSplitResult split_result = eval_sah_split(_ctx, _enclosing_aabb, _centroid_aabb, i, _prim_begin, _prim_end);
+                    if (split_result.is_valid() && split_result.best_sah_cost() < best_object_split.best_sah_cost())
+                    {
+                        best_object_split = split_result;
+                    }
+                }
+            }
+            else
+            {
+                best_object_split = eval_sah_split(_ctx, _enclosing_aabb, _centroid_aabb, aabb_major_axis(_centroid_aabb), _prim_begin, _prim_end);
+            }
+
+            if (!best_object_split.is_valid() || best_object_split.sah_leaf_cost < best_object_split.sah_cost)
+            {
+                return c_invalid_split;
+            }
+
+            *o_split_axis = best_object_split.axis;
+
+            middle_prim_split_idx = exec_sah_split(_ctx, best_object_split, _centroid_aabb, _prim_begin, _prim_end);
+            KT_BVH_ASSERT(middle_prim_split_idx > _prim_begin && middle_prim_split_idx < _prim_end);
+            return middle_prim_split_idx;
 		} break;
 
-		case BVHBuildType::MedianSplit:
-		{
-			float const median = aabb_center(_centroid_aabb).data[_split_axis];
-
-			IntermediatePrimitive* midPrim = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
-													   [median, _split_axis](IntermediatePrimitive const& _val) { return _val.origin.data[_split_axis] < median; });
-
-			middle_prim_split_idx = uint32_t(midPrim - _ctx.primitive_info);
-			if (middle_prim_split_idx == _prim_begin || middle_prim_split_idx == _prim_end)
-			{
-				middle_prim_split_idx = (_prim_begin + _prim_end) / 2;
-			}
-		} break;
 	}
 
-	return middle_prim_split_idx;
+    KT_BVH_ASSERT(false); KT_BVH_UNREACHABLE;
 }
 
-uint32_t split_axis_from_aabb(AABB const& _aabb)
-{
-	Vec3 const aabb_range = _aabb.max - _aabb.min;
-
-	uint32_t split_axis = 0;
-
-	if (aabb_range.y > aabb_range.x)
-	{
-		split_axis = 1;
-	}
-	if (aabb_range.z > aabb_range.data[split_axis])
-	{
-		split_axis = 2;
-	}
-
-	return split_axis;
-}
 
 void calc_enclosing_and_centroid_aabb(BVHBuilderContext& _ctx, uint32_t _prim_begin, uint32_t _prim_end, AABB* o_enclosing, AABB* o_centroid)
 {
@@ -823,7 +889,7 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 
 	if (nprims <= _ctx.build_desc.min_leaf_prims)
 	{
-		return build_bvhn_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
+		return build_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
 	}
 
 	AABB enclosing_aabb = aabb_invalid();
@@ -831,13 +897,13 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 	calc_enclosing_and_centroid_aabb(_ctx, _prim_begin, _prim_end, &enclosing_aabb, &centroid_aabb);
 
 	uint32_t split_axis[BVHBuildDesc::c_max_branching_factor - 1];
-	split_axis[0] = split_axis_from_aabb(centroid_aabb);
+	split_axis[0] = aabb_major_axis(centroid_aabb);
 
-	uint32_t const middle_prim_split_idx = bvhn_eval_split(_ctx, enclosing_aabb, centroid_aabb, split_axis[0], _prim_begin, _prim_end);
-	if (middle_prim_split_idx == UINT32_MAX)
+	uint32_t const middle_prim_split_idx = split_node(_ctx, enclosing_aabb, centroid_aabb, _prim_begin, _prim_end, &split_axis[0]);
+	if (middle_prim_split_idx == c_invalid_split)
 	{
 		// No valid split, make leaf directly.
-		return build_bvhn_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
+		return build_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
 	}
 	KT_BVH_ASSERT(_prim_begin < middle_prim_split_idx && _prim_end > middle_prim_split_idx);
 
@@ -881,11 +947,10 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 		}
 
 		PreSplitIntermediateBVHNode& to_split = presplit_nodes[best_leaf_idx];
-		uint32_t const child_split_axis = split_axis_from_aabb(to_split.centroid_aabb);
-		uint32_t const child_middle_prim_split_idx = bvhn_eval_split(_ctx, to_split.enclosing_aabb, to_split.centroid_aabb, child_split_axis, to_split.prim_begin, to_split.prim_end);
+		uint32_t child_split_axis;
+		uint32_t const child_middle_prim_split_idx = split_node(_ctx, to_split.enclosing_aabb, to_split.centroid_aabb, to_split.prim_begin, to_split.prim_end, &child_split_axis);
 
-		// TODO: Check other splits??
-		if (child_middle_prim_split_idx == UINT32_MAX)
+		if (child_middle_prim_split_idx == c_invalid_split)
 		{
 			break;
 		}

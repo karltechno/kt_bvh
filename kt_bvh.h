@@ -152,10 +152,10 @@ struct BVH4Node
 	float aabb_max_soa[3][4];
 
 	uint32_t children[4];
-	uint16_t num_prims_in_leaf[4];
-	uint8_t split_axis[3];
+    uint16_t num_prims_in_leaf[4];
+    uint8_t split_axis[3];
 
-	uint32_t _pad_;
+    uint32_t _pad_;
 };
 
 enum class BVHBuildType
@@ -186,13 +186,14 @@ struct BVHBuildDesc
 		return ret;
 	}
 
-	void set_binned_sah(float _traversal_cost, uint32_t _num_buckets = 16, uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
+	void set_binned_sah(float _traversal_cost, uint32_t _num_buckets = 16, bool _exhaustive = true, uint32_t _min_prims_per_leaf = c_default_min_prims_per_leaf, uint32_t _max_prims_per_leaf = c_default_max_prims_per_leaf)
 	{
 		type = BVHBuildType::TopDownBinnedSAH;
 		sah_buckets = _num_buckets > c_sah_max_buckets ? c_sah_max_buckets : _num_buckets;
 		sah_traversal_cost = _traversal_cost;
 		min_leaf_prims = _min_prims_per_leaf;
 		max_leaf_prims = _max_prims_per_leaf;
+        sah_exhaustive_axis_test = _exhaustive;
 		width = BVHWidth::BVH2;
 	}
 
@@ -232,6 +233,9 @@ struct BVHBuildDesc
 
 	// Estimated cost of traversal for surface area heuristic (relative to intersection cost).
 	float sah_traversal_cost;
+
+    // Should SAH check all axis, or just major axis of AABB.
+    bool sah_exhaustive_axis_test;
 };
 
 struct IntermediateBVHNode

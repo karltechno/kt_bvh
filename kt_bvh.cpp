@@ -815,11 +815,13 @@ uint32_t exec_sah_split(BVHBuilderContext& _ctx, SAHSplitResult const& _result, 
     float const split_axis_len = (_centroid_aabb.max - _centroid_aabb.min).data[_result.axis];
     float const project_dim_constant = nbuckets / split_axis_len;
 
+    float const bucket_max = float(nbuckets - 1);
+
     IntermediatePrimitive* mid = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
-                                           [&_result, nbuckets, &_centroid_aabb, project_dim_constant](IntermediatePrimitive const& _prim) -> bool
+                                           [&_result, nbuckets, &_centroid_aabb, project_dim_constant, bucket_max](IntermediatePrimitive const& _prim) -> bool
     {
         float const project_to_dim = (_prim.origin - _centroid_aabb.min).data[_result.axis] * project_dim_constant;
-        uint32_t const bucket = min(nbuckets - 1u, uint32_t(project_to_dim));
+        uint32_t const bucket = uint32_t(min(bucket_max, project_to_dim));
         return bucket <= _result.split_idx;
     });
 

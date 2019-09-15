@@ -509,7 +509,7 @@ static void mesh_get_prim(TriMesh const& _mesh, uint32_t _prim_idx, Vec3* o_v0, 
 */
 
 template <void (GetPrimT)(TriMesh const&, uint32_t, Vec3*, Vec3*, Vec3*)>
-static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr)
+static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr, AABB* o_enclosing_aabb, AABB* o_centroid_aabb)
 {
 	for (uint32_t i = 0; i < _mesh.total_prims(); ++i)
 	{
@@ -521,11 +521,15 @@ static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, Inter
 		_prim_arr->origin = aabb_center(_prim_arr->aabb);
 		_prim_arr->prim_id.mesh_idx = _mesh_idx;
 		_prim_arr->prim_id.mesh_prim_idx = i;
-		++_prim_arr;
+
+        *o_enclosing_aabb = aabb_union(*o_enclosing_aabb, _prim_arr->aabb);
+        *o_centroid_aabb = aabb_expand(*o_centroid_aabb, _prim_arr->origin);
+
+        ++_prim_arr;
 	}
 }
 
-static void build_prim_info(BVHBuilderContext& _ctx)
+static void build_prim_info(BVHBuilderContext& _ctx, AABB* o_enclosing_aabb, AABB* o_centroid_aabb)
 {
 	uint32_t prim_idx = 0;
 	for (uint32_t mesh_idx = 0; mesh_idx < _ctx.num_meshes; ++mesh_idx)
@@ -533,9 +537,9 @@ static void build_prim_info(BVHBuilderContext& _ctx)
 		TriMesh const& mesh = _ctx.meshes[mesh_idx];
 		switch (mesh.index_type)
 		{
-			case TriMesh::IndexType::U16: build_prim_info_impl<mesh_get_prim_idx_u16>(mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
-			case TriMesh::IndexType::U32: build_prim_info_impl<mesh_get_prim_idx_u32>(mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
-			case TriMesh::IndexType::UnIndexed: build_prim_info_impl<mesh_get_prim_unindexed>(mesh, mesh_idx, _ctx.primitive_info + prim_idx); break;
+			case TriMesh::IndexType::U16: build_prim_info_impl<mesh_get_prim_idx_u16>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
+			case TriMesh::IndexType::U32: build_prim_info_impl<mesh_get_prim_idx_u32>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
+			case TriMesh::IndexType::UnIndexed: build_prim_info_impl<mesh_get_prim_unindexed>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
 		}
 
 		prim_idx += mesh.total_prims();
@@ -901,7 +905,7 @@ void calc_enclosing_and_centroid_aabb(BVHBuilderContext& _ctx, uint32_t _prim_be
 	*o_enclosing = enclosing_aabb;
 }
 
-static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
+static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, AABB const& _enclosing_aabb, AABB const& _centroid_aabb, uint32_t _depth, uint32_t _prim_begin, uint32_t _prim_end)
 {
 	KT_BVH_ASSERT(_prim_begin < _prim_end);
 
@@ -914,13 +918,9 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 		return build_leaf_node(_ctx, _depth, _prim_begin, _prim_end);
 	}
 
-	AABB enclosing_aabb = aabb_invalid();
-	AABB centroid_aabb = aabb_invalid();
-	calc_enclosing_and_centroid_aabb(_ctx, _prim_begin, _prim_end, &enclosing_aabb, &centroid_aabb);
-
 	uint32_t split_axis[BVHBuildDesc::c_max_branching_factor - 1];
 
-	uint32_t const middle_prim_split_idx = split_node(_ctx, enclosing_aabb, centroid_aabb, _prim_begin, _prim_end, &split_axis[0]);
+	uint32_t const middle_prim_split_idx = split_node(_ctx, _enclosing_aabb, _centroid_aabb, _prim_begin, _prim_end, &split_axis[0]);
 	if (middle_prim_split_idx == c_invalid_split)
 	{
 		// No valid split, make leaf directly.
@@ -1017,7 +1017,8 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 	
 	for (uint32_t i = 0; i < num_children; ++i)
 	{
-		IntermediateBVHNode* child = build_bvhn_recursive(_ctx, _depth + 1, presplit_nodes[i].prim_begin, presplit_nodes[i].prim_end);
+        PreSplitIntermediateBVHNode const& split = presplit_nodes[i];
+		IntermediateBVHNode* child = build_bvhn_recursive(_ctx, split.enclosing_aabb, split.centroid_aabb, _depth + 1, split.prim_begin, split.prim_end);
 		subtree_root->children[i] = child;
 		subtree_aabb = aabb_union(subtree_aabb, aabb_init(child->aabb_min, child->aabb_max));
 	}
@@ -1065,9 +1066,10 @@ IntermediateBVH* bvh_build_intermediate(TriMesh const* _meshes, uint32_t _num_me
 
 	bvh_intermediate->bvh_prim_id_list.ensure_cap(total_prims); // fixed capacity here, if we do spatial splits may need to increase.
 
-	build_prim_info(builder);
+    AABB enclosing_aabb, centroid_aabb;
+    build_prim_info(builder, &enclosing_aabb, &centroid_aabb);
 
-	builder.bvh->root = build_bvhn_recursive(builder, 0, 0, total_prims);
+	builder.bvh->root = build_bvhn_recursive(builder, enclosing_aabb, centroid_aabb, 0, 0, total_prims);
 
 	return bvh_intermediate;
 }

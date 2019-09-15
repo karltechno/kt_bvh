@@ -721,13 +721,17 @@ static SAHSplitResult eval_sah_split
 		IntermediatePrimitive const& prim = _ctx.primitive_info[prim_idx];
 		Vec3 const bucket3 = min(bucket_max, (prim.origin - _centroid_aabb.min) * project_dim_constant);
 
-        for (uint32_t split_axis = 0; split_axis < 3; ++split_axis)
-        {
-            SAHBucketingInfo& axis_bucket = axis_buckets[split_axis];
-            uint32_t const bucket_idx = uint32_t(bucket3.data[split_axis]);
-            axis_bucket.bucket_num_prims[bucket_idx]++;
-            axis_bucket.bucket_bounds[bucket_idx] = aabb_union(prim.aabb, axis_bucket.bucket_bounds[bucket_idx]);
-        }
+        uint32_t const bucket0 = uint32_t(bucket3.x);
+        uint32_t const bucket1 = uint32_t(bucket3.y);
+        uint32_t const bucket2 = uint32_t(bucket3.z);
+
+        axis_buckets[0].bucket_num_prims[bucket0]++;
+        axis_buckets[1].bucket_num_prims[bucket1]++;
+        axis_buckets[2].bucket_num_prims[bucket2]++;
+
+        axis_buckets[0].bucket_bounds[bucket0] = aabb_union(prim.aabb, axis_buckets[0].bucket_bounds[bucket0]);
+        axis_buckets[1].bucket_bounds[bucket1] = aabb_union(prim.aabb, axis_buckets[1].bucket_bounds[bucket1]);
+        axis_buckets[2].bucket_bounds[bucket2] = aabb_union(prim.aabb, axis_buckets[2].bucket_bounds[bucket2]);
 	}
 
 

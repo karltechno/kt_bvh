@@ -679,15 +679,18 @@ static IntermediateBVHNode* build_leaf_node(BVHBuilderContext& _ctx, uint32_t _d
 	return subtree_root;
 }
 
-struct SAHBucket
-{
-	AABB bounds = aabb_invalid();
-	uint32_t num_prims = 0;
-};
-
 struct SAHBucketingInfo
 {
-	SAHBucket buckets[BVHBuildDesc::c_max_sah_buckets];
+    SAHBucketingInfo()
+    {
+        for (AABB& aabb : bucket_bounds)
+        {
+            aabb = aabb_invalid();
+        }
+    }
+
+    AABB bucket_bounds[BVHBuildDesc::c_max_sah_buckets];
+    uint32_t bucket_num_prims[BVHBuildDesc::c_max_sah_buckets] = {};
 
 	AABB forward_split_bounds[BVHBuildDesc::c_max_sah_buckets - 1];
 	uint32_t forward_prim_count[BVHBuildDesc::c_max_sah_buckets - 1] = {};
@@ -722,8 +725,8 @@ static SAHSplitResult eval_sah_split
         {
             SAHBucketingInfo& axis_bucket = axis_buckets[split_axis];
             uint32_t const bucket_idx = uint32_t(bucket3.data[split_axis]);
-            axis_bucket.buckets[bucket_idx].num_prims++;
-            axis_bucket.buckets[bucket_idx].bounds = aabb_union(prim.aabb, axis_bucket.buckets[bucket_idx].bounds);
+            axis_bucket.bucket_num_prims[bucket_idx]++;
+            axis_bucket.bucket_bounds[bucket_idx] = aabb_union(prim.aabb, axis_bucket.bucket_bounds[bucket_idx]);
         }
 	}
 
@@ -737,13 +740,13 @@ static SAHSplitResult eval_sah_split
 
         SAHBucketingInfo& bucket_info = axis_buckets[split_axis];
 
-        bucket_info.forward_split_bounds[0] = bucket_info.buckets[0].bounds;
-        bucket_info.forward_prim_count[0] = bucket_info.buckets[0].num_prims;
+        bucket_info.forward_split_bounds[0] = bucket_info.bucket_bounds[0];
+        bucket_info.forward_prim_count[0] = bucket_info.bucket_num_prims[0];
 
         for (int32_t i = 1; i < int32_t(num_splits); ++i)
         {
-            bucket_info.forward_split_bounds[i] = aabb_union(bucket_info.forward_split_bounds[i - 1], bucket_info.buckets[i].bounds);
-            bucket_info.forward_prim_count[i] = bucket_info.forward_prim_count[i - 1] + bucket_info.buckets[i].num_prims;
+            bucket_info.forward_split_bounds[i] = aabb_union(bucket_info.forward_split_bounds[i - 1], bucket_info.bucket_bounds[i]);
+            bucket_info.forward_prim_count[i] = bucket_info.forward_prim_count[i - 1] + bucket_info.bucket_num_prims[i];
         }
 
         AABB incremental_reverse_aabb = aabb_invalid();
@@ -759,8 +762,8 @@ static SAHSplitResult eval_sah_split
 
         for (int32_t i = int32_t(num_splits) - 1; i >= 0; --i)
         {
-            incremental_reverse_aabb = aabb_union(incremental_reverse_aabb, bucket_info.buckets[i + 1].bounds);
-            incremental_reverse_prim_count += bucket_info.buckets[i + 1].num_prims;
+            incremental_reverse_aabb = aabb_union(incremental_reverse_aabb, bucket_info.bucket_bounds[i + 1]);
+            incremental_reverse_prim_count += bucket_info.bucket_num_prims[i + 1];
 
             uint32_t const countA = bucket_info.forward_prim_count[i];
             uint32_t const countB = incremental_reverse_prim_count;

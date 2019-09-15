@@ -41,35 +41,7 @@ static void swap(T& _lhs, T& _rhs)
 	_rhs = temp;
 }
 
-// Partition array such that all passing the predicate come first.
-template <typename T, typename PredT>
-static T* partition(T* _begin, T* _end, PredT _pred)
-{
-	T* swap_entry = _begin;
-	while (swap_entry != _end && _pred(*swap_entry))
-	{
-		++swap_entry;
-	}
 
-	if (swap_entry == _end)
-	{
-		return swap_entry;
-	}
-
-	_begin = swap_entry + 1;
-
-	while (_begin != _end)
-	{
-		if (_pred(*_begin))
-		{
-			swap(*_begin, *swap_entry);
-			++swap_entry;
-		}
-		++_begin;
-	}
-
-	return swap_entry;
-}
 
 template <typename T>
 static bool is_pow2(T _v)
@@ -428,7 +400,6 @@ struct IntermediatePrimitive
 {
 	AABB aabb;
 	Vec3 origin;
-	PrimitiveID prim_id;
 };
 
 struct BVHBuilderContext
@@ -450,6 +421,7 @@ struct BVHBuilderContext
 	IntermediateBVH* bvh;
 
 	IntermediatePrimitive* primitive_info;
+	PrimitiveID* prim_ids;
 	uint32_t total_primitives;
 
 	TriMesh const* meshes;
@@ -508,8 +480,10 @@ static void mesh_get_prim(TriMesh const& _mesh, uint32_t _prim_idx, Vec3* o_v0, 
 }
 */
 
+
+
 template <void (GetPrimT)(TriMesh const&, uint32_t, Vec3*, Vec3*, Vec3*)>
-static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr, AABB* o_enclosing_aabb, AABB* o_centroid_aabb)
+static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr, PrimitiveID* _prim_id_arr, AABB* o_enclosing_aabb, AABB* o_centroid_aabb)
 {
 	AABB centroid_aabb = *o_centroid_aabb;
 	AABB enclosing_aabb = *o_centroid_aabb;
@@ -522,13 +496,14 @@ static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, Inter
 		_prim_arr->aabb = aabb_expand(_prim_arr->aabb, tri[1]);
 		_prim_arr->aabb = aabb_expand(_prim_arr->aabb, tri[2]);
 		_prim_arr->origin = aabb_center(_prim_arr->aabb);
-		_prim_arr->prim_id.mesh_idx = _mesh_idx;
-		_prim_arr->prim_id.mesh_prim_idx = i;
+		_prim_id_arr->mesh_idx = _mesh_idx;
+		_prim_id_arr->mesh_prim_idx = i;
 
 		enclosing_aabb = aabb_union(enclosing_aabb, _prim_arr->aabb);
 		centroid_aabb = aabb_expand(centroid_aabb, _prim_arr->origin);
 
 		++_prim_arr;
+		++_prim_id_arr;
 	}
 
 	*o_centroid_aabb = centroid_aabb;
@@ -543,9 +518,9 @@ static void build_prim_info(BVHBuilderContext& _ctx, AABB* o_enclosing_aabb, AAB
 		TriMesh const& mesh = _ctx.meshes[mesh_idx];
 		switch (mesh.index_type)
 		{
-			case TriMesh::IndexType::U16: build_prim_info_impl<mesh_get_prim_idx_u16>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
-			case TriMesh::IndexType::U32: build_prim_info_impl<mesh_get_prim_idx_u32>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
-			case TriMesh::IndexType::UnIndexed: build_prim_info_impl<mesh_get_prim_unindexed>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
+			case TriMesh::IndexType::U16: build_prim_info_impl<mesh_get_prim_idx_u16>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, _ctx.prim_ids + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
+			case TriMesh::IndexType::U32: build_prim_info_impl<mesh_get_prim_idx_u32>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, _ctx.prim_ids + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
+			case TriMesh::IndexType::UnIndexed: build_prim_info_impl<mesh_get_prim_unindexed>(mesh, mesh_idx, _ctx.primitive_info + prim_idx, _ctx.prim_ids + prim_idx, o_enclosing_aabb, o_centroid_aabb); break;
 		}
 
 		prim_idx += mesh.total_prims();
@@ -553,6 +528,39 @@ static void build_prim_info(BVHBuilderContext& _ctx, AABB* o_enclosing_aabb, AAB
 	}
 
 	KT_BVH_ASSERT(prim_idx == _ctx.total_primitives);
+}
+
+// Partition array such that all passing the predicate come first.
+template <typename PredT>
+static uint32_t partition_prim_id(BVHBuilderContext& _ctx, uint32_t _begin, uint32_t _end, PredT _pred)
+{
+	IntermediatePrimitive* prims = _ctx.primitive_info;
+	PrimitiveID* ids = _ctx.prim_ids;
+
+	uint32_t swap_idx = _begin;
+
+	while (swap_idx != _end && _pred(prims[swap_idx]))
+	{
+		++swap_idx;
+	}
+
+	if (swap_idx != _end)
+	{
+		uint32_t cur_idx = swap_idx + 1;
+
+		while (cur_idx != _end)
+		{
+			if (_pred(prims[cur_idx]))
+			{
+				swap(prims[cur_idx], prims[swap_idx]);
+				swap(ids[cur_idx], ids[swap_idx]);
+				++swap_idx;
+			}
+			++cur_idx;
+		}
+	}
+
+	return swap_idx;
 }
 
 static void node_copy_aabb(IntermediateBVHNode* _node, AABB const& _aabb)
@@ -616,7 +624,7 @@ static IntermediateBVHNode* build_leaf_node(BVHBuilderContext& _ctx, uint32_t _d
 		for (uint32_t i = _prim_begin; i < _prim_end; ++i)
 		{
 			aabb = aabb_union(aabb, _ctx.primitive_info[i].aabb);
-			*leaf_prims++ = _ctx.primitive_info[i].prim_id;
+			*leaf_prims++ = _ctx.prim_ids[i];
 		}
 
 		node_copy_aabb(node, aabb);
@@ -831,7 +839,7 @@ uint32_t exec_sah_split(BVHBuilderContext& _ctx, SAHSplitResult const& _result, 
 
 	float const bucket_max = float(nbuckets - 1);
 
-	IntermediatePrimitive* mid = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
+	uint32_t const mid_idx = partition_prim_id(_ctx, _prim_begin, _prim_end,
 										   [&_result, nbuckets, &_centroid_aabb, project_dim_constant, bucket_max](IntermediatePrimitive const& _prim) -> bool
 	{
 		float const project_to_dim = (_prim.origin - _centroid_aabb.min).data[_result.axis] * project_dim_constant;
@@ -839,8 +847,6 @@ uint32_t exec_sah_split(BVHBuilderContext& _ctx, SAHSplitResult const& _result, 
 		return bucket <= _result.split_idx;
 	});
 
-	uint32_t const mid_idx = uint32_t(mid - _ctx.primitive_info);
-	KT_BVH_ASSERT(mid_idx > _prim_begin && mid_idx < _prim_end);
 	return mid_idx;
 }
 
@@ -862,10 +868,9 @@ static uint32_t split_node
 		{
 			uint32_t const axis = aabb_major_axis(_centroid_aabb);
 			float const midpoint = (_centroid_aabb.max * 0.5f + _centroid_aabb.min * 0.5f).data[axis];
-			IntermediatePrimitive* midPrim = partition(_ctx.primitive_info + _prim_begin, _ctx.primitive_info + _prim_end,
+			middle_prim_split_idx = partition_prim_id(_ctx, _prim_begin, _prim_end,
 													   [midpoint, axis](IntermediatePrimitive const& _val) { return _val.origin.data[axis] < midpoint; });
 			*o_split_axis = axis;
-			middle_prim_split_idx = uint32_t(midPrim - _ctx.primitive_info);
 			if (middle_prim_split_idx == _prim_begin || middle_prim_split_idx == _prim_end)
 			{
 				// TODO: Sort?
@@ -1066,6 +1071,7 @@ IntermediateBVH* bvh_build_intermediate(TriMesh const* _meshes, uint32_t _num_me
 	builder.total_primitives = total_prims;
 	builder.bvh = bvh_intermediate;
 	builder.primitive_info = builder.arena().alloc_array_uninitialized<IntermediatePrimitive>(total_prims);
+	builder.prim_ids = builder.arena().alloc_array_uninitialized<PrimitiveID>(total_prims);
 	builder.build_desc = _build_desc;
 
 	bvh_intermediate->bvh_prim_id_list.init(&bvh_intermediate->arena);

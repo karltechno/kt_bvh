@@ -910,7 +910,6 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 	calc_enclosing_and_centroid_aabb(_ctx, _prim_begin, _prim_end, &enclosing_aabb, &centroid_aabb);
 
 	uint32_t split_axis[BVHBuildDesc::c_max_branching_factor - 1];
-	split_axis[0] = aabb_major_axis(centroid_aabb);
 
 	uint32_t const middle_prim_split_idx = split_node(_ctx, enclosing_aabb, centroid_aabb, _prim_begin, _prim_end, &split_axis[0]);
 	if (middle_prim_split_idx == c_invalid_split)

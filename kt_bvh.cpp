@@ -511,6 +511,9 @@ static void mesh_get_prim(TriMesh const& _mesh, uint32_t _prim_idx, Vec3* o_v0, 
 template <void (GetPrimT)(TriMesh const&, uint32_t, Vec3*, Vec3*, Vec3*)>
 static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, IntermediatePrimitive* _prim_arr, AABB* o_enclosing_aabb, AABB* o_centroid_aabb)
 {
+	AABB centroid_aabb = *o_centroid_aabb;
+	AABB enclosing_aabb = *o_centroid_aabb;
+
 	for (uint32_t i = 0; i < _mesh.total_prims(); ++i)
 	{
 		Vec3 tri[3];
@@ -522,11 +525,14 @@ static void build_prim_info_impl(TriMesh const& _mesh, uint32_t _mesh_idx, Inter
 		_prim_arr->prim_id.mesh_idx = _mesh_idx;
 		_prim_arr->prim_id.mesh_prim_idx = i;
 
-		*o_enclosing_aabb = aabb_union(*o_enclosing_aabb, _prim_arr->aabb);
-		*o_centroid_aabb = aabb_expand(*o_centroid_aabb, _prim_arr->origin);
+		enclosing_aabb = aabb_union(enclosing_aabb, _prim_arr->aabb);
+		centroid_aabb = aabb_expand(centroid_aabb, _prim_arr->origin);
 
 		++_prim_arr;
 	}
+
+	*o_centroid_aabb = centroid_aabb;
+	*o_enclosing_aabb = enclosing_aabb;
 }
 
 static void build_prim_info(BVHBuilderContext& _ctx, AABB* o_enclosing_aabb, AABB* o_centroid_aabb)

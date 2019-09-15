@@ -226,10 +226,10 @@ static AABB aabb_init(float const* _min, float const* _max)
 	return r;
 }
 
-static float aabb_surface_area(AABB const& _aabb)
+static float aabb_half_surface_area(AABB const& _aabb)
 {
-	Vec3 const diag = _aabb.max - _aabb.min;
-	return (diag.x * diag.y + diag.x * diag.z + diag.y * diag.z) * 2.0f;
+    Vec3 const diag = _aabb.max - _aabb.min;
+    return (diag.x * diag.y + diag.y * diag.z + diag.z * diag.x);
 }
 
 static uint32_t aabb_major_axis(AABB const& _aabb)
@@ -751,7 +751,7 @@ static SAHSplitResult eval_sah_split
 
         AABB incremental_reverse_aabb = aabb_invalid();
         uint32_t incremental_reverse_prim_count = 0;
-        float const root_surface_area = aabb_surface_area(_enclosing_aabb);
+        float const root_surface_area = aabb_half_surface_area(_enclosing_aabb);
 
         uint32_t best_split = UINT32_MAX;
         float best_cost = FLT_MAX;
@@ -777,8 +777,8 @@ static SAHSplitResult eval_sah_split
 
             AABB const& forward_bounds = bucket_info.forward_split_bounds[i];
 
-            float const sa = aabb_surface_area(forward_bounds);
-            float const sb = aabb_surface_area(incremental_reverse_aabb);
+            float const sa = aabb_half_surface_area(forward_bounds);
+            float const sb = aabb_half_surface_area(incremental_reverse_aabb);
             float const cost = traversal_cost + (sa * countA + sb * countB) / root_surface_area;
 
             if (cost < best_cost)
@@ -945,7 +945,7 @@ static IntermediateBVHNode* build_bvhn_recursive(BVHBuilderContext& _ctx, uint32
 		for (uint32_t i = 0; i < num_children; ++i)
 		{
 			PreSplitIntermediateBVHNode const& split_node = presplit_nodes[i];
-			float const split_surface_area = aabb_surface_area(split_node.enclosing_aabb);
+			float const split_surface_area = aabb_half_surface_area(split_node.enclosing_aabb);
 
 			if (split_node.num_prims() > _ctx.build_desc.min_leaf_prims
 				&& split_surface_area > largest_surface_area)
